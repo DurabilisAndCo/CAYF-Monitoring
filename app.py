@@ -625,8 +625,8 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime):
     blocks = read_df("SELECT * FROM agri_blocks ORDER BY id DESC", ())
     st.subheader("2) Liste des blocs")
     if blocks.empty:
-        df_empty_info("Aucun bloc créé pour le moment.")
-        return
+    df_empty_info("Aucun bloc créé pour le moment. Crée un bloc pour activer la saisie capteur.")
+    st.stop()
 
     st.dataframe(blocks, use_container_width=True, hide_index=True)
 
