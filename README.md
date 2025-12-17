@@ -1,4 +1,4 @@
-# Monitoring Multi-Activités (V3)
+# Monitoring Multi-Activités 
 
 App Streamlit pour le monitoring **Agriculture (Banane/Taro/PIF)** + **Apiculture (Ruches)** + **Cunicululture (Lapins)** + **Vivoplants**,
 avec **tableau de bord récap** et **recommandations automatisées (règles)**.
