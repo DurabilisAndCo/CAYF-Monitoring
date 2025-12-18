@@ -1,4 +1,4 @@
-# app.py — CAYF Monitoring (Single-file Pro)
+# app.py — CAYF Monitoring 
 # Streamlit app: Agriculture (Banane/Taro) + Vivoplants + Apiculture + Cuniculture
 # + Dashboard + Objectifs & KPI + Export CSV + Admin reset (safe by crop)
 
