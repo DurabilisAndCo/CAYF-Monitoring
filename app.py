@@ -1323,7 +1323,7 @@ def main() -> None:
 
     init_db()
     with st.sidebar.expander("🛠️ Admin (reset données)", expanded=False):
-    st.warning("Action irréversible. Utilise uniquement pour supprimer les données de test.")
+       st.warning("Action irréversible. Utilise uniquement pour supprimer les données de test.")
 
     if st.button("🗑️ Tout effacer (reset total)"):
         for tbl in [
