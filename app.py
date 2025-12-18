@@ -1,4 +1,4 @@
-# app.py — CAFY Data Monitoring (Single-file Pro)
+# app.py — CAYF Data Monitoring (Single-file Pro)
 # Streamlit app: Agriculture (Banane/Taro/PIF) + Apiculture + Cunicululture + Vivoplants
 # DB: SQLite local file created automatically.
 
@@ -19,7 +19,7 @@ LOGO_CAYF = ASSETS_DIR / "cayf.jpg"
 LOGO_DURABILIS = ASSETS_DIR / "durabilis.png"
 DB_PATH = Path("cafy_monitoring.db")
 
-BRAND_TITLE = "CAFY – Data Monitoring Data • développé par DURABILIS & CO"
+BRAND_TITLE = "CAYF – Data Monitoring Data • développé par DURABILIS & CO"
 BRAND_SUBTITLE_1 = "CENTRE AGROÉCOLOGIQUE INNOVANT DE N'ZAMALIGUÉ"
 BRAND_SUBTITLE_2 = "porté par la Coopérative Agricole Young Foundation"
 BRAND_LOCATION = "Localisation : N'zamaligué, Komo-Mondah, Gabon"
