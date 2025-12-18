@@ -434,32 +434,30 @@ def compute_recommendations(start_dt: datetime) -> List[str]:
 def page_dashboard(start_dt: datetime):
     st.header("📊 Tableau de bord – Vue d’ensemble")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    agri_blocks = read_df("SELECT COUNT(*) AS n FROM agri_blocks")
-    nb_blocks = int(agri_blocks["n"].iloc[0]) if not agri_blocks.empty else 0
-
-    hives = read_df("SELECT COUNT(*) AS n FROM hives")
-    nb_hives = int(hives["n"].iloc[0]) if not hives.empty else 0
-
-    cycles = read_df("SELECT COUNT(*) AS n FROM rabbit_cycles")
-    nb_cycles = int(cycles["n"].iloc[0]) if not cycles.empty else 0
-
-    lots = read_df("SELECT COUNT(*) AS n FROM vivoplants_lots")
-    nb_lots = int(lots["n"].iloc[0]) if not lots.empty else 0
+    nb_banana = int(read_df("SELECT COUNT(*) AS n FROM agri_blocks WHERE crop_type='banane'")["n"].iloc[0])
+    nb_taro = int(read_df("SELECT COUNT(*) AS n FROM agri_blocks WHERE crop_type='taro'")["n"].iloc[0])
+    nb_lots = int(read_df("SELECT COUNT(*) AS n FROM vivoplants_lots")["n"].iloc[0])
+    nb_hives = int(read_df("SELECT COUNT(*) AS n FROM hives")["n"].iloc[0])
+    nb_cycles = int(read_df("SELECT COUNT(*) AS n FROM rabbit_cycles")["n"].iloc[0])
 
     with col1:
-        st.metric("Blocs agricoles", nb_blocks, help="Banane + Taro")
-        st.caption("Banane / Taro")
+        st.metric("Banane", nb_banana)
+        st.caption("Blocs banane")
     with col2:
-        st.metric("Ruches", nb_hives)
-        st.caption("Suivi inspections & production")
+        st.metric("Taro", nb_taro)
+        st.caption("Blocs taro")
     with col3:
-        st.metric("Cuniculture", nb_cycles)
-        st.caption("Suivi cheptel & cycles")
-    with col4:
         st.metric("Vivoplants", nb_lots)
-        st.caption("Lots / taux de reprise")
+        st.caption("Lots vivoplants")
+    with col4:
+        st.metric("Ruches", nb_hives)
+        st.caption("Apiculture")
+    with col5:
+        st.metric("Cuniculture", nb_cycles)
+        st.caption("Cycles lapins")
+
 
     st.divider()
     st.subheader("🧠 Recommandations automatisées (par activité)")
