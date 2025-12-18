@@ -1,4 +1,4 @@
-# app.py — CAFY Monitoring (Single-file Pro)
+# app.py — CAYF Monitoring (Single-file Pro)
 # Streamlit app: Agriculture (Banane/Taro) + Vivoplants + Apiculture + Cuniculture
 # + Dashboard + Objectifs & KPI + Export CSV + Admin reset (safe by crop)
 
@@ -285,9 +285,9 @@ def delete_agri_by_crop(crop: str) -> None:
 # =========================
 # UI: Branding
 # =========================
-BRAND_TITLE = "CAFY – Data Monitoring Data • développé par DURABILIS & CO"
+BRAND_TITLE = "CAYF – Data Monitoring Data • développé par DURABILIS & CO"
 BRAND_SUBTITLE_1 = "CENTRE AGROÉCOLOGIQUE INNOVANT DE N'ZAMALIGUÉ"
-BRAND_SUBTITLE_2 = "porté par la Coopérative Agricole Young Foundation"
+BRAND_SUBTITLE_2 = "porté par la Coopérative Agricole Young Foundation (CAYF)"
 BRAND_LOCATION = "Localisation : N'zamaligué, Komo-Mondah, Gabon"
 
 
@@ -312,7 +312,7 @@ def brand_header():
         if not safe_image(LOGO_DURABILIS):
             st.caption("Logo Durabilis manquant (assets/durabilis.png)")
 
-    st.caption(f"🌿 CAFY Monitoring • Développé par DURABILIS & CO • Version {APP_VERSION}")
+    st.caption(f"🌿 CAYF Monitoring • Développé par DURABILIS & CO • Version {APP_VERSION}")
     st.divider()
 
 
@@ -1141,7 +1141,7 @@ def admin_reset_block():
 # Main
 # =========================
 def main() -> None:
-    st.set_page_config(page_title="CAFY Monitoring", layout="wide")
+    st.set_page_config(page_title="CAYF Monitoring", layout="wide")
 
     # UI skin (dark + slight polish)
     st.markdown(
@@ -1183,7 +1183,7 @@ def main() -> None:
     else:
         st.error("Page inconnue.")
 
-    st.caption("© CAFY Monitoring • DURABILIS & CO")
+    st.caption("© CAYF Monitoring • DURABILIS & CO")
 
 
 if __name__ == "__main__":
