@@ -439,19 +439,31 @@ def page_dashboard(start_dt: datetime) -> None:
     cycles = read_df("SELECT * FROM rabbit_cycles", ())
     lots = read_df("SELECT * FROM vivoplants_lots", ())
 
-    c1, c2, c3, c4 = st.columns(4)
+    # --- NEW: split agriculture by crop_type
+    banana_blocks = int((blocks["crop_type"] == "banane").sum()) if not blocks.empty else 0
+    taro_blocks   = int((blocks["crop_type"] == "taro").sum()) if not blocks.empty else 0
+    pif_blocks    = int((blocks["crop_type"] == "pif").sum()) if not blocks.empty else 0
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
-        metric_card("Blocs agricoles", len(blocks))
-        st.caption("Banane / Taro / PIF")
+        metric_card("Banane (blocs)", banana_blocks)
+        st.caption("Agriculture")
     with c2:
-        metric_card("Ruches", len(hives))
-        st.caption("Suivi inspections & production")
+        metric_card("Taro (blocs)", taro_blocks)
+        st.caption("Agriculture")
     with c3:
-        metric_card("Cuniculuture", len(cycles))
-        st.caption("Suivi cheptel & cycles")
+        metric_card("PIF (blocs)", pif_blocks)
+        st.caption("Agriculture")
     with c4:
-        metric_card("Vivoplants", len(lots))
-        st.caption("Lots / taux de reprise")
+        metric_card("Ruches", len(hives))
+        st.caption("Apiculture")
+    with c5:
+        metric_card("Cuniculuture", len(cycles))
+        st.caption("Lapins")
+    with c6:
+        metric_card("Vivoplants (lots)", len(lots))
+        st.caption("Vivoplants")
+
 
     st.divider()
     st.subheader("🧠 Recommandations automatisées (règles)")
