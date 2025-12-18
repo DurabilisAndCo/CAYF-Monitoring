@@ -1323,7 +1323,7 @@ def main() -> None:
 
     init_db()
     with st.sidebar.expander("🧹 Admin – Reset données (TEST)", expanded=False):
-    st.warning("Action irréversible. Uniquement pour données de test.")
+         st.warning("Action irréversible. Uniquement pour données de test.")
 
     col1, col2 = st.columns(2)
 
