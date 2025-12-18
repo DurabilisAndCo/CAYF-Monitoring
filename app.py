@@ -1322,6 +1322,32 @@ def main() -> None:
     )
 
     init_db()
+    with st.sidebar.expander("🛠️ Admin (reset données)", expanded=False):
+    st.warning("Action irréversible. Utilise uniquement pour supprimer les données de test.")
+
+    if st.button("🗑️ Tout effacer (reset total)"):
+        for tbl in [
+            "sensor_readings", "agri_observations", "agri_blocks",
+            "vivoplants_events", "vivoplants_lots",
+            "hive_inspections", "hives",
+            "rabbit_events", "rabbit_cycles"
+        ]:
+            exec_sql(f"DELETE FROM {tbl};", ())
+        st.success("Données supprimées ✅ Recharge la page.")
+        st.rerun()
+
+    if st.button("🗑️ Effacer seulement Agriculture"):
+        for tbl in ["sensor_readings", "agri_observations", "agri_blocks"]:
+            exec_sql(f"DELETE FROM {tbl};", ())
+        st.success("Agriculture supprimée ✅")
+        st.rerun()
+
+    if st.button("🗑️ Effacer seulement Vivoplants"):
+        for tbl in ["vivoplants_events", "vivoplants_lots"]:
+            exec_sql(f"DELETE FROM {tbl};", ())
+        st.success("Vivoplants supprimé ✅")
+        st.rerun()
+
     brand_header()
 
     page, days = sidebar_nav()
