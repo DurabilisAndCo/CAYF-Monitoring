@@ -21,7 +21,7 @@ LOGO_CAYF = ASSETS_DIR / "cayf.jpg"
 LOGO_DURABILIS = ASSETS_DIR / "durabilis.png"
 DB_PATH = Path("cafy_monitoring.db")
 
-BRAND_TITLE = "CAYF – Data Monitoring Data • développé par DURABILIS & CO"
+BRAND_TITLE = "CAYF – Data Monitoring • développé par DURABILIS & CO"
 BRAND_SUBTITLE_1 = "CENTRE AGROÉCOLOGIQUE INNOVANT DE N'ZAMALIGUÉ"
 BRAND_SUBTITLE_2 = "par la Coopérative Agricole Young Foundation (CAYF)"
 BRAND_LOCATION = "Localisation : N'zamaligué, Komo-Mondah, Gabon"
