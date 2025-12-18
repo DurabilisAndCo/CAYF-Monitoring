@@ -1322,31 +1322,56 @@ def main() -> None:
     )
 
     init_db()
-    with st.sidebar.expander("🛠️ Admin (reset données)", expanded=False):
-       st.warning("Action irréversible. Utilise uniquement pour supprimer les données de test.")
+    with st.sidebar.expander("🧹 Admin – Reset données (TEST)", expanded=False):
+    st.warning("Action irréversible. Uniquement pour données de test.")
 
-    if st.button("🗑️ Tout effacer (reset total)"):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("🗑️ Banane"):
+            for tbl in ["sensor_readings", "agri_observations", "agri_blocks"]:
+                exec_sql("DELETE FROM " + tbl)
+            st.success("Banane supprimée")
+            st.rerun()
+
+        if st.button("🗑️ Taro"):
+            for tbl in ["sensor_readings", "agri_observations", "agri_blocks"]:
+                exec_sql("DELETE FROM " + tbl)
+            st.success("Taro supprimé")
+            st.rerun()
+
+        if st.button("🗑️ Vivoplants"):
+            for tbl in ["vivoplants_events", "vivoplants_lots"]:
+                exec_sql("DELETE FROM " + tbl)
+            st.success("Vivoplants supprimés")
+            st.rerun()
+
+    with col2:
+        if st.button("🗑️ Apiculture"):
+            for tbl in ["hive_inspections", "hives"]:
+                exec_sql("DELETE FROM " + tbl)
+            st.success("Apiculture supprimée")
+            st.rerun()
+
+        if st.button("🗑️ Cuniculture"):
+            for tbl in ["rabbit_events", "rabbit_cycles"]:
+                exec_sql("DELETE FROM " + tbl)
+            st.success("Cuniculture supprimée")
+            st.rerun()
+
+    st.divider()
+
+    if st.button("🔥 TOUT EFFACER"):
         for tbl in [
             "sensor_readings", "agri_observations", "agri_blocks",
             "vivoplants_events", "vivoplants_lots",
             "hive_inspections", "hives",
             "rabbit_events", "rabbit_cycles"
         ]:
-            exec_sql(f"DELETE FROM {tbl};", ())
-        st.success("Données supprimées ✅ Recharge la page.")
+            exec_sql("DELETE FROM " + tbl)
+        st.success("Toutes les données supprimées")
         st.rerun()
 
-    if st.button("🗑️ Effacer seulement Agriculture"):
-        for tbl in ["sensor_readings", "agri_observations", "agri_blocks"]:
-            exec_sql(f"DELETE FROM {tbl};", ())
-        st.success("Agriculture supprimée ✅")
-        st.rerun()
-
-    if st.button("🗑️ Effacer seulement Vivoplants"):
-        for tbl in ["vivoplants_events", "vivoplants_lots"]:
-            exec_sql(f"DELETE FROM {tbl};", ())
-        st.success("Vivoplants supprimé ✅")
-        st.rerun()
 
     brand_header()
 
