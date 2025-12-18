@@ -1,30 +1,32 @@
-# app.py — CAYF Data Monitoring (Single-file Pro)
-# Streamlit app: Agriculture (Banane/Taro/PIF) + Apiculture + Cunicululture + Vivoplants
+# app.py — CAFY Data Monitoring (Single-file Pro)
+# Streamlit app: Agriculture (Banane/Taro) + Vivoplants + Apiculture + Cunicululture
+# PIF = méthode (pas une culture)
 # DB: SQLite local file created automatically.
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dtime
 import pandas as pd
 import streamlit as st
+
 
 # -----------------------------
 # Config
 # -----------------------------
-APP_VERSION = "V4 (Single-file Pro)"
+APP_VERSION = "V5 (Single-file Pro)"
 ASSETS_DIR = Path("assets")
 LOGO_CAYF = ASSETS_DIR / "cayf.jpg"
 LOGO_DURABILIS = ASSETS_DIR / "durabilis.png"
 DB_PATH = Path("cafy_monitoring.db")
 
-BRAND_TITLE = "CAYF – Data Monitoring Data • développé par DURABILIS & CO"
+BRAND_TITLE = "CAFY – Data Monitoring Data • développé par DURABILIS & CO"
 BRAND_SUBTITLE_1 = "CENTRE AGROÉCOLOGIQUE INNOVANT DE N'ZAMALIGUÉ"
-BRAND_SUBTITLE_2 = "porté par la Coopérative Agricole Young Foundation"
+BRAND_SUBTITLE_2 = "par la Coopérative Agricole Young Foundation"
 BRAND_LOCATION = "Localisation : N'zamaligué, Komo-Mondah, Gabon"
 
-# 7-en-1 fields (you can rename labels here)
+# 7-en-1 fields
 SENSOR_FIELDS = [
     ("soil_moisture", "Humidité du sol (%)", 0.0, 100.0),
     ("soil_temp", "Température du sol (°C)", -5.0, 60.0),
@@ -35,7 +37,7 @@ SENSOR_FIELDS = [
     ("air_humidity", "Humidité de l’air (%)", 0.0, 100.0),
 ]
 
-# Simple rule thresholds (tune for your site)
+# Seuils simples (à ajuster)
 RULES = {
     "soil_moisture_low": 25.0,
     "soil_moisture_high": 85.0,
@@ -45,7 +47,32 @@ RULES = {
     "soil_temp_high": 35.0,
     "air_humidity_low": 40.0,
     "air_humidity_high": 90.0,
+
+    "vp_reprise_low": 60.0,     # %
+    "vp_loss_high": 10.0,       # % (à comparer aussi avec loss_tolerance_pct)
+    "rabbit_death_alert": 5,    # décès période
 }
+
+
+# -----------------------------
+# Utils
+# -----------------------------
+def now_iso() -> str:
+    return datetime.now().replace(microsecond=0).isoformat()
+
+
+def combine_dt(d: date, t: dtime) -> datetime:
+    return datetime.combine(d, t).replace(microsecond=0)
+
+
+def safe_float(x, default=None):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
 
 # -----------------------------
 # DB helpers
@@ -67,25 +94,34 @@ def read_df(sql: str, params: tuple = ()) -> pd.DataFrame:
         return pd.read_sql_query(sql, conn, params=params)
 
 
+def col_exists(table: str, col: str) -> bool:
+    df = read_df(f"PRAGMA table_info({table});", ())
+    if df.empty:
+        return False
+    return col in df["name"].tolist()
+
+
 def init_db() -> None:
-    # Agriculture blocks
+    # --- Agriculture blocks (banane/taro uniquement)
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS agri_blocks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            crop_type TEXT NOT NULL,              -- banane / taro / pif
+            crop_type TEXT NOT NULL,          -- banane / taro
             variety TEXT,
             area_ha REAL,
             location TEXT,
             planting_date TEXT,
+            pif_method INTEGER DEFAULT 0,     -- 0/1 : PIF (méthode)
+            pif_note TEXT,                    -- précision méthode PIF / protocole
             notes TEXT,
             created_at TEXT NOT NULL
         );
         """
     )
 
-    # Sensor readings (7-en-1)
+    # --- Sensor readings (7-en-1) liés à un bloc agricole
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -110,18 +146,18 @@ def init_db() -> None:
         """
     )
 
-    # Field observations (agriculture qualitative/quantitative)
+    # --- Field observations (agri)
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS agri_observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             block_id INTEGER NOT NULL,
             obs_at TEXT NOT NULL,
-            plant_stage TEXT,     -- ex: plantule / croissance / floraison / fructification
-            pests TEXT,           -- ravageurs/maladies
-            irrigation TEXT,      -- ok / à faire / incident
+            plant_stage TEXT,
+            pests TEXT,
+            irrigation TEXT,
             growth_cm REAL,
-            leaves_state TEXT,    -- ex: vert / jaunissant / nécrose
+            leaves_state TEXT,
             general_note TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(block_id) REFERENCES agri_blocks(id) ON DELETE CASCADE
@@ -129,7 +165,7 @@ def init_db() -> None:
         """
     )
 
-    # Apiculture: hives + inspections
+    # --- Apiculture
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS hives (
@@ -149,9 +185,9 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             hive_id INTEGER NOT NULL,
             inspect_at TEXT NOT NULL,
-            queen_seen INTEGER,          -- 0/1
-            brood_level INTEGER,         -- 0-5
-            honey_frames INTEGER,        -- frames
+            queen_seen INTEGER,
+            brood_level INTEGER,
+            honey_frames INTEGER,
             pests TEXT,
             actions TEXT,
             honey_harvest_kg REAL,
@@ -162,7 +198,7 @@ def init_db() -> None:
         """
     )
 
-    # Cunicululture: cycles + events
+    # --- Cunicululture
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS rabbit_cycles (
@@ -193,13 +229,13 @@ def init_db() -> None:
         """
     )
 
-    # Vivoplants: lots + production events
+    # --- Vivoplants (activité séparée)
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS vivoplants_lots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lot_name TEXT NOT NULL,
-            species TEXT,                 -- ex: bananier / taro / autre
+            species TEXT,                 -- bananier / taro / autre
             start_date TEXT,
             target_qty INTEGER,
             notes TEXT,
@@ -215,7 +251,7 @@ def init_db() -> None:
             event_at TEXT NOT NULL,
             produced_qty INTEGER,
             losses_qty INTEGER,
-            reprise_rate REAL,            -- %
+            reprise_rate REAL,
             note TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(lot_id) REFERENCES vivoplants_lots(id) ON DELETE CASCADE
@@ -223,7 +259,7 @@ def init_db() -> None:
         """
     )
 
-    # Targets / KPI
+    # --- Targets / KPI
     exec_sql(
         """
         CREATE TABLE IF NOT EXISTS targets (
@@ -238,23 +274,42 @@ def init_db() -> None:
         );
         """
     )
-    # Ensure singleton row exists
     if read_df("SELECT COUNT(*) as n FROM targets").iloc[0]["n"] == 0:
         exec_sql(
             """
-            INSERT INTO targets (id, banana_ca_target, taro_ca_target, rabbits_target_per_cycle, hives_target, vivoplants_target_per_cycle, loss_tolerance_pct, updated_at)
-            VALUES (1, 33320000, 5000000, 540, 2, 1000, 10.0, ?)
+            INSERT INTO targets (
+                id, banana_ca_target, taro_ca_target,
+                rabbits_target_per_cycle, hives_target,
+                vivoplants_target_per_cycle, loss_tolerance_pct, updated_at
+            ) VALUES (1, 33320000, 5000000, 540, 2, 1000, 10.0, ?)
             """,
             (now_iso(),),
         )
 
+    # ---------------------------
+    # Mini-migration si ancien DB
+    # (ex: crop_type = 'pif' dans ancienne version)
+    # -> on force crop_type='banane' + pif_method=1
+    # ---------------------------
+    try:
+        if col_exists("agri_blocks", "pif_method") is False:
+            exec_sql("ALTER TABLE agri_blocks ADD COLUMN pif_method INTEGER DEFAULT 0;", ())
+        if col_exists("agri_blocks", "pif_note") is False:
+            exec_sql("ALTER TABLE agri_blocks ADD COLUMN pif_note TEXT;", ())
+    except Exception:
+        # si déjà migré / SQLite limitation selon contexte
+        pass
 
-def now_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat()
-
-
-def to_dt(d: date, t: datetime.time) -> datetime:
-    return datetime.combine(d, t).replace(microsecond=0)
+    try:
+        # si des lignes existent avec crop_type='pif' (ancienne logique)
+        df = read_df("SELECT id, crop_type FROM agri_blocks WHERE lower(crop_type)='pif';", ())
+        if not df.empty:
+            exec_sql(
+                "UPDATE agri_blocks SET crop_type='banane', pif_method=1, pif_note=COALESCE(pif_note,'Ancienne donnée: PIF (méthode)') WHERE lower(crop_type)='pif';",
+                (),
+            )
+    except Exception:
+        pass
 
 
 # -----------------------------
@@ -268,21 +323,10 @@ def safe_image(path: Path, width: int | None = None) -> None:
 
 
 def brand_header() -> None:
-    # Top banner with logos and text
     st.markdown(
         """
         <style>
-        .cafy-banner {
-            display:flex; gap:16px; align-items:stretch;
-            padding: 10px 10px 2px 10px;
-        }
-        .cafy-left, .cafy-right {
-            width: 160px; min-width:160px;
-            background: transparent;
-            border-radius: 14px;
-        }
         .cafy-center {
-            flex:1;
             background: linear-gradient(90deg, rgba(45,51,129,0.9), rgba(44,110,161,0.9), rgba(68,160,201,0.9));
             border-radius: 14px;
             padding: 14px 18px;
@@ -327,35 +371,29 @@ def sidebar_nav() -> tuple[str, int]:
         "Choisir une page",
         [
             "Tableau de bord (Récap & Recos)",
-            "Agriculture (Blocs & Capteurs)",
+            "Agriculture – Banane (Blocs & Capteurs)",
+            "Agriculture – Taro (Blocs & Capteurs)",
             "Observations terrain (Agriculture)",
+            "Vivoplants",
             "Apiculture (Ruches)",
             "Cuniculuture (Lapins)",
-            "Vivoplants",
             "Objectifs & KPI",
             "Export (CSV)",
         ],
         index=0,
     )
 
-    # Global filter
     st.sidebar.divider()
     st.sidebar.subheader("Filtres")
     days = st.sidebar.slider("Période d’analyse (jours)", 7, 365, 180, step=1)
-
     return page, days
 
 
-def metric_card(label: str, value, suffix: str = "") -> None:
-    st.metric(label, f"{value}{suffix}")
-
-
 # -----------------------------
-# Recommendation engine (simple rules)
+# Recommendation engines
 # -----------------------------
-def get_latest_sensor_per_block(start_dt: datetime) -> pd.DataFrame:
-    # Latest reading per block within period
-    df = read_df(
+def latest_sensor_per_block(start_dt: datetime) -> pd.DataFrame:
+    return read_df(
         """
         SELECT sr.*
         FROM sensor_readings sr
@@ -368,63 +406,187 @@ def get_latest_sensor_per_block(start_dt: datetime) -> pd.DataFrame:
         """,
         (start_dt.isoformat(),),
     )
-    return df
 
 
-def compute_recommendations(start_dt: datetime) -> list[str]:
-    recos: list[str] = []
-
+def recos_agriculture(start_dt: datetime, crop_type: str | None = None) -> list[str]:
     blocks = read_df("SELECT * FROM agri_blocks ORDER BY id DESC", ())
     if blocks.empty:
-        return ["Commence par créer tes blocs agricoles (banane / taro / PIF)."]
+        return ["Commence par créer des blocs agricoles (banane et/ou taro)."]
 
-    latest = get_latest_sensor_per_block(start_dt)
+    if crop_type:
+        blocks = blocks[blocks["crop_type"] == crop_type].copy()
+        if blocks.empty:
+            return [f"Aucun bloc « {crop_type} » pour le moment. Crée-en au moins un."]
+
+    latest = latest_sensor_per_block(start_dt)
     if latest.empty:
-        return ["Ajoute au moins une mesure capteur (7-en-1) pour activer des recommandations automatiques."]
+        return ["Ajoute au moins une mesure capteur (7-en-1) sur la période pour générer des recommandations."]
 
-    # Map block names
+    # limiter aux blocs filtrés
+    if crop_type:
+        allowed_ids = set(blocks["id"].astype(int).tolist())
+        latest = latest[latest["block_id"].astype(int).isin(allowed_ids)].copy()
+        if latest.empty:
+            return [f"Aucune mesure capteur récente sur les blocs « {crop_type} »."]
+
     bmap = {int(r["id"]): str(r["name"]) for _, r in blocks.iterrows()}
+    recos: list[str] = []
 
     for _, r in latest.iterrows():
-        block_id = int(r["block_id"])
-        name = bmap.get(block_id, f"Bloc #{block_id}")
+        bid = int(r["block_id"])
+        name = bmap.get(bid, f"Bloc #{bid}")
 
-        sm = r.get("soil_moisture")
-        ph = r.get("soil_ph")
-        stemp = r.get("soil_temp")
-        ah = r.get("air_humidity")
+        sm = safe_float(r.get("soil_moisture"))
+        ph = safe_float(r.get("soil_ph"))
+        stemp = safe_float(r.get("soil_temp"))
+        ah = safe_float(r.get("air_humidity"))
 
-        # Soil moisture
         if sm is not None:
             if sm < RULES["soil_moisture_low"]:
-                recos.append(f"💧 **{name}** : humidité du sol basse ({sm:.1f}%). Prévoir arrosage / paillage.")
+                recos.append(f"💧 **{name}** : humidité sol basse ({sm:.1f}%). Prévoir arrosage / paillage.")
             elif sm > RULES["soil_moisture_high"]:
-                recos.append(f"⚠️ **{name}** : humidité du sol très élevée ({sm:.1f}%). Risque asphyxie/racines → vérifier drainage.")
+                recos.append(f"⚠️ **{name}** : humidité sol très élevée ({sm:.1f}%). Vérifier drainage (risque asphyxie).")
 
-        # pH
         if ph is not None:
             if ph < RULES["soil_ph_low"]:
                 recos.append(f"🧪 **{name}** : pH bas ({ph:.2f}). Envisager amendement (selon protocole local).")
             elif ph > RULES["soil_ph_high"]:
-                recos.append(f"🧪 **{name}** : pH élevé ({ph:.2f}). Surveiller disponibilité nutriments (selon protocole local).")
+                recos.append(f"🧪 **{name}** : pH élevé ({ph:.2f}). Surveiller disponibilité nutriments.")
 
-        # Soil temp
         if stemp is not None:
             if stemp < RULES["soil_temp_low"]:
-                recos.append(f"🌡️ **{name}** : sol frais ({stemp:.1f}°C). Croissance potentiellement ralentie.")
+                recos.append(f"🌡️ **{name}** : sol frais ({stemp:.1f}°C). Croissance possiblement ralentie.")
             elif stemp > RULES["soil_temp_high"]:
                 recos.append(f"🌡️ **{name}** : sol chaud ({stemp:.1f}°C). Surveiller stress hydrique.")
 
-        # Air humidity
         if ah is not None:
             if ah > RULES["air_humidity_high"]:
-                recos.append(f"🍃 **{name}** : humidité air élevée ({ah:.1f}%). Risque fongique → surveillance maladies.")
+                recos.append(f"🍃 **{name}** : humidité air élevée ({ah:.1f}%). Risque fongique → surveillance.")
             elif ah < RULES["air_humidity_low"]:
                 recos.append(f"🍃 **{name}** : humidité air basse ({ah:.1f}%). Surveiller stress & irrigation.")
 
     if not recos:
-        recos.append("✅ Aucun signal critique détecté sur la dernière mesure de chaque bloc (période sélectionnée).")
+        recos.append("✅ Agriculture : aucun signal critique détecté sur la dernière mesure (période).")
+    return recos
 
+
+def recos_vivoplants(start_dt: datetime) -> list[str]:
+    targets = read_df("SELECT * FROM targets WHERE id=1", ())
+    loss_tol = float(targets.iloc[0]["loss_tolerance_pct"]) if not targets.empty else 10.0
+
+    lots = read_df("SELECT * FROM vivoplants_lots ORDER BY id DESC", ())
+    if lots.empty:
+        return ["Crée un lot vivoplants pour activer les recommandations (ex: bananier, taro)."]
+
+    df = read_df(
+        """
+        SELECT e.*, l.lot_name, l.species
+        FROM vivoplants_events e
+        JOIN vivoplants_lots l ON l.id = e.lot_id
+        WHERE e.event_at >= ?
+        ORDER BY e.event_at DESC
+        """,
+        (start_dt.isoformat(),),
+    )
+    if df.empty:
+        return ["Ajoute au moins un événement vivoplants (production/pertes/taux de reprise) sur la période."]
+
+    recos: list[str] = []
+    # dernière ligne par lot
+    df["event_at"] = pd.to_datetime(df["event_at"])
+    latest = df.sort_values("event_at").groupby("lot_id").tail(1)
+
+    for _, r in latest.iterrows():
+        name = f"{r['lot_name']} ({r['species']})"
+        produced = int(r["produced_qty"] or 0)
+        losses = int(r["losses_qty"] or 0)
+        reprise = safe_float(r.get("reprise_rate"), default=None)
+
+        total = max(produced + losses, 1)
+        loss_pct = (losses / total) * 100.0
+
+        if reprise is not None and reprise < RULES["vp_reprise_low"]:
+            recos.append(f"🌱 **{name}** : taux de reprise faible ({reprise:.1f}%). Vérifier protocole, substrat, humidité, hygiène.")
+        if loss_pct > max(RULES["vp_loss_high"], loss_tol):
+            recos.append(f"⚠️ **{name}** : pertes élevées ({loss_pct:.1f}%). Analyser cause (contamination, stress, acclimatation).")
+
+    if not recos:
+        recos.append("✅ Vivoplants : aucun signal critique sur les derniers événements (période).")
+    return recos
+
+
+def recos_apiculture(start_dt: datetime) -> list[str]:
+    hives = read_df("SELECT * FROM hives ORDER BY id DESC", ())
+    if hives.empty:
+        return ["Crée au moins une ruche pour activer les recommandations apiculture."]
+
+    df = read_df(
+        """
+        SELECT i.*, h.name as hive_name
+        FROM hive_inspections i
+        JOIN hives h ON h.id = i.hive_id
+        WHERE i.inspect_at >= ?
+        ORDER BY i.inspect_at DESC
+        """,
+        (start_dt.isoformat(),),
+    )
+    if df.empty:
+        return ["Ajoute au moins une inspection de ruche sur la période pour générer des recommandations."]
+
+    df["inspect_at"] = pd.to_datetime(df["inspect_at"])
+    latest = df.sort_values("inspect_at").groupby("hive_id").tail(1)
+
+    recos: list[str] = []
+    for _, r in latest.iterrows():
+        name = r["hive_name"]
+        queen_seen = int(r["queen_seen"] or 0)
+        brood = int(r["brood_level"] or 0)
+        pests = (r["pests"] or "").strip()
+        honey = safe_float(r.get("honey_harvest_kg"), default=0.0)
+
+        if queen_seen == 0:
+            recos.append(f"🐝 **{name}** : reine non vue → vérifier ponte/couvain, prévoir contrôle rapproché.")
+        if brood <= 1:
+            recos.append(f"🐝 **{name}** : couvain faible (niveau {brood}) → risque faiblesse colonie, vérifier alimentation.")
+        if pests:
+            recos.append(f"⚠️ **{name}** : parasites/problèmes signalés (« {pests} ») → actions + suivi.")
+        if honey == 0:
+            recos.append(f"🍯 **{name}** : aucune récolte de miel (période) → normal si hors saison, sinon vérifier ressources.")
+
+    if not recos:
+        recos.append("✅ Apiculture : aucun signal critique sur les dernières inspections (période).")
+    return recos
+
+
+def recos_cuniculuture(start_dt: datetime) -> list[str]:
+    cycles = read_df("SELECT * FROM rabbit_cycles ORDER BY id DESC", ())
+    if cycles.empty:
+        return ["Crée un cycle lapins pour activer les recommandations cuniculture."]
+
+    ev = read_df(
+        """
+        SELECT e.*, c.cycle_name
+        FROM rabbit_events e
+        JOIN rabbit_cycles c ON c.id = e.cycle_id
+        WHERE e.event_at >= ?
+        ORDER BY e.event_at DESC
+        """,
+        (start_dt.isoformat(),),
+    )
+    if ev.empty:
+        return ["Ajoute des événements (naissances/décès) sur la période pour générer des recommandations."]
+
+    # Synthèse période
+    births = int(ev["births"].fillna(0).sum())
+    deaths = int(ev["deaths"].fillna(0).sum())
+
+    recos: list[str] = []
+    if deaths >= RULES["rabbit_death_alert"]:
+        recos.append(f"⚠️ Lapins : décès élevés sur la période ({deaths}). Vérifier hygiène, alimentation, vaccination, stress thermique.")
+    if births == 0 and deaths > 0:
+        recos.append("🐇 Lapins : aucun enregistrement de naissances mais des décès → vérifier suivi reproduction & saisie.")
+    if not recos:
+        recos.append("✅ Cuniculuture : aucun signal critique (période).")
     return recos
 
 
@@ -435,46 +597,58 @@ def page_dashboard(start_dt: datetime) -> None:
     st.header("📊 Tableau de bord – Vue d’ensemble")
 
     blocks = read_df("SELECT * FROM agri_blocks", ())
+    lots = read_df("SELECT * FROM vivoplants_lots", ())
     hives = read_df("SELECT * FROM hives", ())
     cycles = read_df("SELECT * FROM rabbit_cycles", ())
-    lots = read_df("SELECT * FROM vivoplants_lots", ())
 
-    # --- NEW: split agriculture by crop_type
     banana_blocks = int((blocks["crop_type"] == "banane").sum()) if not blocks.empty else 0
-    taro_blocks   = int((blocks["crop_type"] == "taro").sum()) if not blocks.empty else 0
-    pif_blocks    = int((blocks["crop_type"] == "pif").sum()) if not blocks.empty else 0
+    taro_blocks = int((blocks["crop_type"] == "taro").sum()) if not blocks.empty else 0
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        metric_card("Banane (blocs)", banana_blocks)
-        st.caption("Agriculture")
+        st.metric("Agriculture – Banane (blocs)", banana_blocks)
     with c2:
-        metric_card("Taro (blocs)", taro_blocks)
-        st.caption("Agriculture")
+        st.metric("Agriculture – Taro (blocs)", taro_blocks)
     with c3:
-        metric_card("Vivoplants (lots)", len(lots))
-        st.caption("Vivoplants")
+        st.metric("Vivoplants (lots)", len(lots))
     with c4:
-        metric_card("Ruches", len(hives))
-        st.caption("Apiculture")
+        st.metric("Apiculture (ruches)", len(hives))
     with c5:
-        metric_card("Cuniculuture", len(cycles))
-        st.caption("Lapins")
-
-        
-
+        st.metric("Cuniculuture (cycles)", len(cycles))
 
     st.divider()
-    st.subheader("🧠 Recommandations automatisées (règles)")
-    recos = compute_recommendations(start_dt)
-    for r in recos:
-        st.markdown(f"- {r}")
+    st.subheader("🧠 Recommandations automatisées (par activité)")
+
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("### 🌿 Agriculture – Banane")
+        for r in recos_agriculture(start_dt, "banane"):
+            st.markdown(f"- {r}")
+
+        st.markdown("### 🌿 Agriculture – Taro")
+        for r in recos_agriculture(start_dt, "taro"):
+            st.markdown(f"- {r}")
+
+        st.markdown("### 🌱 Vivoplants")
+        for r in recos_vivoplants(start_dt):
+            st.markdown(f"- {r}")
+
+    with colB:
+        st.markdown("### 🐝 Apiculture")
+        for r in recos_apiculture(start_dt):
+            st.markdown(f"- {r}")
+
+        st.markdown("### 🐇 Cuniculuture")
+        for r in recos_cuniculuture(start_dt):
+            st.markdown(f"- {r}")
 
     st.divider()
-    st.subheader("📈 Tendances (capteurs) – sur la période sélectionnée")
+    st.subheader("📈 Tendances capteurs (7-en-1) – période sélectionnée")
+
     sensors = read_df(
         """
-        SELECT sr.reading_at, b.name as block_name, sr.soil_moisture, sr.soil_temp, sr.soil_ph, sr.soil_ec, sr.light, sr.air_temp, sr.air_humidity
+        SELECT sr.reading_at, b.name as block_name, b.crop_type,
+               sr.soil_moisture, sr.soil_temp, sr.soil_ph, sr.soil_ec, sr.light, sr.air_temp, sr.air_humidity
         FROM sensor_readings sr
         JOIN agri_blocks b ON b.id = sr.block_id
         WHERE sr.reading_at >= ?
@@ -482,41 +656,43 @@ def page_dashboard(start_dt: datetime) -> None:
         """,
         (start_dt.isoformat(),),
     )
-
     if sensors.empty:
-        df_empty_info("Aucune donnée capteur. Va dans « Agriculture (Blocs & Capteurs) » pour ajouter une mesure.")
+        df_empty_info("Aucune donnée capteur sur la période. Ajoute une mesure dans Agriculture (Banane ou Taro).")
         return
 
-    # Simple line charts: user can choose metric
     metric = st.selectbox(
-        "Choisir un indicateur à visualiser",
+        "Choisir un indicateur",
         ["soil_moisture", "soil_temp", "soil_ph", "soil_ec", "light", "air_temp", "air_humidity"],
         index=0,
     )
-    plot_df = sensors[["reading_at", "block_name", metric]].copy()
-    plot_df["reading_at"] = pd.to_datetime(plot_df["reading_at"])
+    sensors["reading_at"] = pd.to_datetime(sensors["reading_at"])
+    pivot = sensors.pivot_table(index="reading_at", columns="block_name", values=metric, aggfunc="mean")
+    st.line_chart(pivot)
 
-    st.line_chart(plot_df, x="reading_at", y=metric, color="block_name")
 
+def page_agri_blocks_and_sensors(start_dt: datetime, crop_type: str) -> None:
+    title = "🌿 Agriculture – Banane (Blocs & Capteurs 7-en-1)" if crop_type == "banane" else "🌿 Agriculture – Taro (Blocs & Capteurs 7-en-1)"
+    st.header(title)
 
-def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
-    st.header("🌿 Agriculture – Blocs & Capteurs (7-en-1)")
-
-    st.subheader("1) Créer un bloc agricole (banane / taro / PIF)")
-    with st.form("create_block", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns([2.2, 1.6, 1.8, 1.4])
+    st.subheader("1) Créer un bloc agricole")
+    with st.form(f"create_block_{crop_type}", clear_on_submit=True):
+        c1, c2, c3, c4 = st.columns([2.2, 1.2, 1.8, 1.4])
         with c1:
             name = st.text_input("Nom du bloc", value="Bloc A")
         with c2:
-            crop_type = st.selectbox("Culture", ["banane", "taro", "pif"])
+            st.selectbox("Culture", [crop_type], index=0, disabled=True)
         with c3:
-            variety = st.text_input("Variété", value="Big Ebanga / locale…")
+            variety = st.text_input("Variété", value="Locale / …")
         with c4:
             area_ha = st.number_input("Superficie (ha)", min_value=0.0, max_value=1000.0, value=1.0, step=0.1)
 
-        location = st.text_input("Localisation interne", value="Zone humide / parcelle nord…")
+        location = st.text_input("Localisation interne", value="Parcelle …")
         planting_date = st.date_input("Date de mise en place", value=date.today())
-        notes = st.text_area("Notes", placeholder="Irrigation, sol, contraintes, etc.")
+
+        pif_method = st.checkbox("Méthode PIF utilisée ?", value=False)
+        pif_note = st.text_input("Note PIF (optionnel)", value="", placeholder="ex: PIF + protocole ...")
+
+        notes = st.text_area("Notes générales", placeholder="Irrigation, sol, contraintes, etc.")
 
         submitted = st.form_submit_button("✅ Créer le bloc")
         if submitted:
@@ -525,16 +701,18 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
             else:
                 exec_sql(
                     """
-                    INSERT INTO agri_blocks (name, crop_type, variety, area_ha, location, planting_date, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO agri_blocks (name, crop_type, variety, area_ha, location, planting_date, pif_method, pif_note, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name.strip(),
                         crop_type,
                         variety.strip() if variety else None,
-                        float(area_ha) if area_ha else None,
+                        float(area_ha) if area_ha is not None else None,
                         location.strip() if location else None,
                         planting_date.isoformat() if planting_date else None,
+                        1 if pif_method else 0,
+                        pif_note.strip() if pif_note else None,
                         notes.strip() if notes else None,
                         now_iso(),
                     ),
@@ -543,29 +721,33 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
 
     st.divider()
     st.subheader("2) Liste des blocs")
-    blocks = read_df("SELECT * FROM agri_blocks ORDER BY id DESC", ())
+    blocks = read_df("SELECT * FROM agri_blocks WHERE crop_type=? ORDER BY id DESC", (crop_type,))
     if blocks.empty:
-        df_empty_info("Aucun bloc créé pour le moment. Crée un bloc pour activer la saisie capteur.")
+        df_empty_info(f"Aucun bloc « {crop_type} » créé pour le moment.")
         return
 
-    st.dataframe(blocks, use_container_width=True, hide_index=True)
+    show_blocks = blocks.copy()
+    show_blocks["pif_method"] = show_blocks["pif_method"].apply(lambda x: "Oui" if int(x or 0) == 1 else "Non")
+    st.dataframe(show_blocks, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("3) Ajouter une mesure capteur (7-en-1)")
 
-    # Build label mapping
-    block_labels = [f"{int(r['id'])} — {r['name']} ({r['crop_type']})" for _, r in blocks.iterrows()]
-    label_to_id = {label: int(label.split("—")[0].strip()) for label in block_labels}
+    labels = [f"{int(r['id'])} — {r['name']}" for _, r in blocks.iterrows()]
+    label_to_id = {label: int(label.split("—")[0].strip()) for label in labels}
+    chosen = st.selectbox("Choisir un bloc", labels)
+    chosen_id = label_to_id[chosen]
 
-    chosen_label = st.selectbox("Choisir un bloc", block_labels)
-    chosen_block_id = label_to_id[chosen_label]
-
-    with st.form("add_sensor", clear_on_submit=True):
+    with st.form(f"add_sensor_{crop_type}", clear_on_submit=True):
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            reading_date = st.date_input("Date", value=date.today(), key="sr_date")
+            reading_date = st.date_input("Date", value=date.today(), key=f"sr_date_{crop_type}")
         with c2:
-            reading_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0), key="sr_time")
+            reading_time = st.time_input(
+                "Heure",
+                value=datetime.now().time().replace(second=0, microsecond=0),
+                key=f"sr_time_{crop_type}",
+            )
         with c3:
             sensor_id = st.text_input("ID capteur (optionnel)", value="sensor-01")
         with c4:
@@ -574,16 +756,15 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
         st.markdown("**Paramètres 7-en-1**")
         cols = st.columns(3)
         values: dict[str, float] = {}
-
         for idx, (key, label, mn, mx) in enumerate(SENSOR_FIELDS):
             with cols[idx % 3]:
-                values[key] = st.number_input(label, min_value=float(mn), max_value=float(mx), value=0.0, step=0.1)
+                values[key] = st.number_input(label, min_value=float(mn), max_value=float(mx), value=0.0, step=0.1, key=f"{key}_{crop_type}")
 
         note = st.text_area("Note (optionnel)", placeholder="Contexte : pluie, arrosage récent, etc.")
 
         submitted = st.form_submit_button("💾 Enregistrer la mesure")
         if submitted:
-            reading_at = to_dt(reading_date, reading_time).isoformat()
+            reading_at = combine_dt(reading_date, reading_time).isoformat()
             exec_sql(
                 """
                 INSERT INTO sensor_readings (
@@ -593,10 +774,10 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    chosen_block_id,
+                    chosen_id,
                     reading_at,
                     sensor_id.strip() if sensor_id else None,
-                    float(battery_level) if battery_level else None,
+                    float(battery_level) if battery_level is not None else None,
                     float(values["soil_moisture"]),
                     float(values["soil_temp"]),
                     float(values["soil_ph"]),
@@ -611,17 +792,18 @@ def page_agriculture_blocks_and_sensors(start_dt: datetime) -> None:
             st.success("Mesure capteur enregistrée ✅")
 
     st.divider()
-    st.subheader("4) Dernières mesures (période)")
+    st.subheader("4) Détails des 7 valeurs (période)")
+
     sensors = read_df(
         """
-        SELECT sr.reading_at, b.name as bloc, b.crop_type as culture,
+        SELECT sr.reading_at, b.name as bloc,
                sr.soil_moisture, sr.soil_temp, sr.soil_ph, sr.soil_ec, sr.light, sr.air_temp, sr.air_humidity
         FROM sensor_readings sr
         JOIN agri_blocks b ON b.id = sr.block_id
-        WHERE sr.reading_at >= ?
+        WHERE b.crop_type = ? AND sr.reading_at >= ?
         ORDER BY sr.reading_at DESC
         """,
-        (start_dt.isoformat(),),
+        (crop_type, start_dt.isoformat()),
     )
     if sensors.empty:
         df_empty_info("Aucune mesure capteur sur la période.")
@@ -634,13 +816,13 @@ def page_observations_agri(start_dt: datetime) -> None:
 
     blocks = read_df("SELECT * FROM agri_blocks ORDER BY id DESC", ())
     if blocks.empty:
-        df_empty_info("Crée d’abord un bloc dans « Agriculture (Blocs & Capteurs) ».")
+        df_empty_info("Crée d’abord un bloc Banane ou Taro.")
         return
 
-    block_labels = [f"{int(r['id'])} — {r['name']} ({r['crop_type']})" for _, r in blocks.iterrows()]
-    label_to_id = {label: int(label.split("—")[0].strip()) for label in block_labels}
-    chosen_label = st.selectbox("Choisir un bloc", block_labels)
-    chosen_block_id = label_to_id[chosen_label]
+    labels = [f"{int(r['id'])} — {r['name']} ({r['crop_type']})" for _, r in blocks.iterrows()]
+    label_to_id = {label: int(label.split("—")[0].strip()) for label in labels}
+    chosen = st.selectbox("Choisir un bloc", labels)
+    chosen_id = label_to_id[chosen]
 
     st.subheader("1) Ajouter une observation")
     with st.form("add_obs", clear_on_submit=True):
@@ -652,7 +834,7 @@ def page_observations_agri(start_dt: datetime) -> None:
         with c3:
             stage = st.selectbox("Stade", ["plantule", "croissance", "floraison", "fructification", "récolte", "autre"])
 
-        pests = st.text_input("Ravageurs / maladies (si présent)", placeholder="ex: charançon, cercosporiose…")
+        pests = st.text_input("Ravageurs / maladies", placeholder="ex: charançon, cercosporiose…")
         irrigation = st.selectbox("Irrigation", ["ok", "à faire", "incident", "non renseigné"])
         c4, c5 = st.columns(2)
         with c4:
@@ -660,23 +842,23 @@ def page_observations_agri(start_dt: datetime) -> None:
         with c5:
             leaves_state = st.selectbox("État des feuilles", ["vert", "jaunissant", "taches", "nécrose", "non renseigné"])
 
-        note = st.text_area("Note générale", placeholder="Qualitatif : stress hydrique, fertilisation, désherbage, etc.")
-
+        note = st.text_area("Note générale", placeholder="Désherbage, fertilisation, stress hydrique, etc.")
         submitted = st.form_submit_button("✅ Enregistrer l’observation")
         if submitted:
-            obs_at = to_dt(obs_date, obs_time).isoformat()
+            obs_at = combine_dt(obs_date, obs_time).isoformat()
             exec_sql(
                 """
-                INSERT INTO agri_observations (block_id, obs_at, plant_stage, pests, irrigation, growth_cm, leaves_state, general_note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO agri_observations (
+                    block_id, obs_at, plant_stage, pests, irrigation, growth_cm, leaves_state, general_note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    chosen_block_id,
+                    chosen_id,
                     obs_at,
                     stage,
                     pests.strip() if pests else None,
                     irrigation,
-                    float(growth_cm) if growth_cm else None,
+                    float(growth_cm) if growth_cm is not None else None,
                     leaves_state,
                     note.strip() if note else None,
                     now_iso(),
@@ -701,6 +883,97 @@ def page_observations_agri(start_dt: datetime) -> None:
         df_empty_info("Aucune observation sur la période.")
     else:
         st.dataframe(hist, use_container_width=True, hide_index=True)
+
+
+def page_vivoplants(start_dt: datetime) -> None:
+    st.header("🌱 Vivoplants")
+
+    st.subheader("1) Créer un lot")
+    with st.form("create_lot", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            lot_name = st.text_input("Nom lot", value="Lot VP-01")
+        with c2:
+            species = st.selectbox("Espèce", ["bananier", "taro", "autre"])
+        with c3:
+            start_date = st.date_input("Date début", value=date.today())
+        target_qty = st.number_input("Objectif quantité (nb)", min_value=0, max_value=1000000, value=1000, step=10)
+        notes = st.text_area("Notes", placeholder="Milieu, protocole, variété…")
+        submitted = st.form_submit_button("✅ Créer lot")
+        if submitted:
+            if not lot_name.strip():
+                st.error("Nom requis.")
+            else:
+                exec_sql(
+                    """
+                    INSERT INTO vivoplants_lots (lot_name, species, start_date, target_qty, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (lot_name.strip(), species, start_date.isoformat(), int(target_qty), notes.strip() if notes else None, now_iso()),
+                )
+                st.success("Lot créé ✅")
+
+    lots = read_df("SELECT * FROM vivoplants_lots ORDER BY id DESC", ())
+    st.divider()
+    st.subheader("2) Lots")
+    if lots.empty:
+        df_empty_info("Aucun lot vivoplants.")
+        return
+    st.dataframe(lots, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("3) Ajouter un événement (production)")
+    labels = [f"{int(r['id'])} — {r['lot_name']} ({r['species']})" for _, r in lots.iterrows()]
+    label_to_id = {label: int(label.split("—")[0].strip()) for label in labels}
+    chosen = st.selectbox("Choisir un lot", labels)
+    lot_id = label_to_id[chosen]
+
+    with st.form("add_vp_event", clear_on_submit=True):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            d = st.date_input("Date", value=date.today())
+        with c2:
+            t = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0))
+        with c3:
+            produced = st.number_input("Produits (nb)", min_value=0, max_value=1000000, value=0, step=10)
+        with c4:
+            losses = st.number_input("Pertes (nb)", min_value=0, max_value=1000000, value=0, step=10)
+
+        reprise = st.number_input("Taux de reprise (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0)
+        note = st.text_area("Note")
+        submitted = st.form_submit_button("💾 Enregistrer")
+        if submitted:
+            event_at = combine_dt(d, t).isoformat()
+            exec_sql(
+                """
+                INSERT INTO vivoplants_events (lot_id, event_at, produced_qty, losses_qty, reprise_rate, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (lot_id, event_at, int(produced), int(losses), float(reprise), note.strip() if note else None, now_iso()),
+            )
+            st.success("Événement vivoplants enregistré ✅")
+
+    st.divider()
+    st.subheader("4) Historique (période)")
+    hist = read_df(
+        """
+        SELECT e.event_at, l.lot_name, l.species, e.produced_qty, e.losses_qty, e.reprise_rate, e.note
+        FROM vivoplants_events e
+        JOIN vivoplants_lots l ON l.id = e.lot_id
+        WHERE e.event_at >= ?
+        ORDER BY e.event_at DESC
+        """,
+        (start_dt.isoformat(),),
+    )
+    if hist.empty:
+        df_empty_info("Aucun événement sur la période.")
+    else:
+        st.dataframe(hist, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("🧠 Recommandations vivoplants (période)")
+    for r in recos_vivoplants(start_dt):
+        st.markdown(f"- {r}")
 
 
 def page_apiculture(start_dt: datetime) -> None:
@@ -737,14 +1010,13 @@ def page_apiculture(start_dt: datetime) -> None:
     if hives.empty:
         df_empty_info("Aucune ruche. Crée une ruche pour activer les inspections.")
         return
-
     st.dataframe(hives, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("3) Ajouter une inspection")
-    hive_labels = [f"{int(r['id'])} — {r['name']}" for _, r in hives.iterrows()]
-    label_to_id = {label: int(label.split("—")[0].strip()) for label in hive_labels}
-    chosen = st.selectbox("Choisir une ruche", hive_labels)
+    labels = [f"{int(r['id'])} — {r['name']}" for _, r in hives.iterrows()]
+    label_to_id = {label: int(label.split("—")[0].strip()) for label in labels}
+    chosen = st.selectbox("Choisir une ruche", labels)
     hive_id = label_to_id[chosen]
 
     with st.form("add_hive_inspection", clear_on_submit=True):
@@ -766,11 +1038,12 @@ def page_apiculture(start_dt: datetime) -> None:
 
         submitted = st.form_submit_button("💾 Enregistrer inspection")
         if submitted:
-            inspect_at = to_dt(d, t).isoformat()
+            inspect_at = combine_dt(d, t).isoformat()
             exec_sql(
                 """
-                INSERT INTO hive_inspections (hive_id, inspect_at, queen_seen, brood_level, honey_frames, pests, actions, honey_harvest_kg, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO hive_inspections (
+                    hive_id, inspect_at, queen_seen, brood_level, honey_frames, pests, actions, honey_harvest_kg, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hive_id,
@@ -804,8 +1077,13 @@ def page_apiculture(start_dt: datetime) -> None:
     else:
         st.dataframe(hist, use_container_width=True, hide_index=True)
 
+    st.divider()
+    st.subheader("🧠 Recommandations apiculture (période)")
+    for r in recos_apiculture(start_dt):
+        st.markdown(f"- {r}")
 
-def page_cuniculture(start_dt: datetime) -> None:
+
+def page_cuniculuture(start_dt: datetime) -> None:
     st.header("🐇 Cuniculuture (Lapins)")
 
     st.subheader("1) Créer un cycle")
@@ -841,7 +1119,6 @@ def page_cuniculture(start_dt: datetime) -> None:
     if cycles.empty:
         df_empty_info("Aucun cycle lapins.")
         return
-
     st.dataframe(cycles, use_container_width=True, hide_index=True)
 
     st.divider()
@@ -868,7 +1145,7 @@ def page_cuniculture(start_dt: datetime) -> None:
 
         submitted = st.form_submit_button("💾 Enregistrer événement")
         if submitted:
-            event_at = to_dt(d, t).isoformat()
+            event_at = combine_dt(d, t).isoformat()
             exec_sql(
                 """
                 INSERT INTO rabbit_events (cycle_id, event_at, births, deaths, vaccinations, feed_note, note, created_at)
@@ -904,91 +1181,10 @@ def page_cuniculture(start_dt: datetime) -> None:
     else:
         st.dataframe(hist, use_container_width=True, hide_index=True)
 
-
-def page_vivoplants(start_dt: datetime) -> None:
-    st.header("🌱 Vivoplants")
-
-    st.subheader("1) Créer un lot")
-    with st.form("create_lot", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            lot_name = st.text_input("Nom lot", value="Lot VP-01")
-        with c2:
-            species = st.selectbox("Espèce", ["bananier", "taro", "autre"])
-        with c3:
-            start_date = st.date_input("Date début", value=date.today())
-        target_qty = st.number_input("Objectif quantité (nb)", min_value=0, max_value=1000000, value=1000, step=10)
-        notes = st.text_area("Notes", placeholder="milieu, protocole, variété…")
-        submitted = st.form_submit_button("✅ Créer lot")
-        if submitted:
-            if not lot_name.strip():
-                st.error("Nom requis.")
-            else:
-                exec_sql(
-                    """
-                    INSERT INTO vivoplants_lots (lot_name, species, start_date, target_qty, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (lot_name.strip(), species, start_date.isoformat(), int(target_qty), notes.strip() if notes else None, now_iso()),
-                )
-                st.success("Lot créé ✅")
-
-    lots = read_df("SELECT * FROM vivoplants_lots ORDER BY id DESC", ())
     st.divider()
-    st.subheader("2) Lots")
-    if lots.empty:
-        df_empty_info("Aucun lot vivoplants.")
-        return
-    st.dataframe(lots, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("3) Ajouter une production (événement)")
-    labels = [f"{int(r['id'])} — {r['lot_name']} ({r['species']})" for _, r in lots.iterrows()]
-    label_to_id = {label: int(label.split("—")[0].strip()) for label in labels}
-    chosen = st.selectbox("Choisir un lot", labels)
-    lot_id = label_to_id[chosen]
-
-    with st.form("add_vp_event", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            d = st.date_input("Date", value=date.today())
-        with c2:
-            t = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0))
-        with c3:
-            produced = st.number_input("Produits (nb)", min_value=0, max_value=1000000, value=0, step=10)
-        with c4:
-            losses = st.number_input("Pertes (nb)", min_value=0, max_value=1000000, value=0, step=10)
-
-        reprise = st.number_input("Taux de reprise (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0)
-        note = st.text_area("Note")
-        submitted = st.form_submit_button("💾 Enregistrer")
-        if submitted:
-            event_at = to_dt(d, t).isoformat()
-            exec_sql(
-                """
-                INSERT INTO vivoplants_events (lot_id, event_at, produced_qty, losses_qty, reprise_rate, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (lot_id, event_at, int(produced), int(losses), float(reprise), note.strip() if note else None, now_iso()),
-            )
-            st.success("Événement vivoplants enregistré ✅")
-
-    st.divider()
-    st.subheader("4) Historique (période)")
-    hist = read_df(
-        """
-        SELECT e.event_at, l.lot_name, l.species, e.produced_qty, e.losses_qty, e.reprise_rate, e.note
-        FROM vivoplants_events e
-        JOIN vivoplants_lots l ON l.id = e.lot_id
-        WHERE e.event_at >= ?
-        ORDER BY e.event_at DESC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if hist.empty:
-        df_empty_info("Aucun événement sur la période.")
-    else:
-        st.dataframe(hist, use_container_width=True, hide_index=True)
+    st.subheader("🧠 Recommandations cuniculture (période)")
+    for r in recos_cuniculuture(start_dt):
+        st.markdown(f"- {r}")
 
 
 def page_objectifs_kpi(start_dt: datetime) -> None:
@@ -1015,7 +1211,8 @@ def page_objectifs_kpi(start_dt: datetime) -> None:
             exec_sql(
                 """
                 UPDATE targets
-                SET banana_ca_target=?, taro_ca_target=?, rabbits_target_per_cycle=?, hives_target=?, vivoplants_target_per_cycle=?, loss_tolerance_pct=?, updated_at=?
+                SET banana_ca_target=?, taro_ca_target=?, rabbits_target_per_cycle=?, hives_target=?,
+                    vivoplants_target_per_cycle=?, loss_tolerance_pct=?, updated_at=?
                 WHERE id=1
                 """,
                 (float(banana_target), float(taro_target), int(rabbits_target), int(hives_target), int(vivoplants_target), float(loss_tol), now_iso()),
@@ -1025,7 +1222,6 @@ def page_objectifs_kpi(start_dt: datetime) -> None:
     st.divider()
     st.subheader("📌 Progression (MVP)")
 
-    # Rabbits: sum births/deaths in period
     rabbit_stats = read_df(
         "SELECT COALESCE(SUM(births),0) as births, COALESCE(SUM(deaths),0) as deaths FROM rabbit_events WHERE event_at >= ?",
         (start_dt.isoformat(),),
@@ -1041,42 +1237,52 @@ def page_objectifs_kpi(start_dt: datetime) -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        metric_card("Naissances (période)", int(rabbit_stats["births"]))
+        st.metric("Naissances (période)", int(rabbit_stats["births"]))
         st.caption(f"Décès: {int(rabbit_stats['deaths'])}")
     with c2:
-        metric_card("Miel récolté (kg)", float(honey_stats["honey_kg"]))
+        st.metric("Miel récolté (kg)", float(honey_stats["honey_kg"]))
         st.caption("Somme des inspections")
     with c3:
-        metric_card("Vivoplants produits", int(vp_stats["prod"]))
+        st.metric("Vivoplants produits", int(vp_stats["prod"]))
         st.caption(f"Pertes: {int(vp_stats['loss'])}")
 
     st.divider()
     st.subheader("🧠 Recommandations (pilotage)")
-    recos = compute_recommendations(start_dt)
-    for r in recos:
+    st.markdown("### 🌿 Banane")
+    for r in recos_agriculture(start_dt, "banane"):
+        st.markdown(f"- {r}")
+    st.markdown("### 🌿 Taro")
+    for r in recos_agriculture(start_dt, "taro"):
+        st.markdown(f"- {r}")
+    st.markdown("### 🌱 Vivoplants")
+    for r in recos_vivoplants(start_dt):
+        st.markdown(f"- {r}")
+    st.markdown("### 🐝 Apiculture")
+    for r in recos_apiculture(start_dt):
+        st.markdown(f"- {r}")
+    st.markdown("### 🐇 Cuniculuture")
+    for r in recos_cuniculuture(start_dt):
         st.markdown(f"- {r}")
 
 
 def page_export(start_dt: datetime) -> None:
     st.header("⬇️ Export des données (CSV)")
-    st.info("Les exports seront disponibles dès la saisie des données terrain.")
 
     tables = [
-        ("Capteurs (7-en-1)", "sensor_readings", "reading_at"),
-        ("Blocs agricoles", "agri_blocks", "created_at"),
-        ("Observations terrain (agri)", "agri_observations", "obs_at"),
-        ("Ruches", "hives", "created_at"),
-        ("Inspections ruches", "hive_inspections", "inspect_at"),
-        ("Cycles lapins", "rabbit_cycles", "created_at"),
-        ("Événements lapins", "rabbit_events", "event_at"),
-        ("Lots vivoplants", "vivoplants_lots", "created_at"),
-        ("Événements vivoplants", "vivoplants_events", "event_at"),
+        ("Agriculture – Blocs", "agri_blocks", "created_at"),
+        ("Agriculture – Capteurs (7-en-1)", "sensor_readings", "reading_at"),
+        ("Agriculture – Observations", "agri_observations", "obs_at"),
+        ("Vivoplants – Lots", "vivoplants_lots", "created_at"),
+        ("Vivoplants – Événements", "vivoplants_events", "event_at"),
+        ("Apiculture – Ruches", "hives", "created_at"),
+        ("Apiculture – Inspections", "hive_inspections", "inspect_at"),
+        ("Lapins – Cycles", "rabbit_cycles", "created_at"),
+        ("Lapins – Événements", "rabbit_events", "event_at"),
         ("Objectifs (targets)", "targets", "updated_at"),
     ]
 
-    tab_objs = st.tabs([t[0] for t in tables])
-
-    for tab, (label, table, dtcol) in zip(tab_objs, tables):
+    tabs = st.tabs([t[0] for t in tables])
+    for tab, (label, table, dtcol) in zip(tabs, tables):
         with tab:
             try:
                 if table == "targets":
@@ -1092,10 +1298,9 @@ def page_export(start_dt: datetime) -> None:
                 continue
 
             st.dataframe(df, use_container_width=True, hide_index=True)
-            csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 f"📥 Télécharger {label} (CSV)",
-                data=csv,
+                data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"cafy_{table}.csv",
                 mime="text/csv",
             )
@@ -1107,7 +1312,6 @@ def page_export(start_dt: datetime) -> None:
 def main() -> None:
     st.set_page_config(page_title="CAFY Monitoring", layout="wide")
 
-    # Dark-friendly tweaks
     st.markdown(
         """
         <style>
@@ -1125,16 +1329,18 @@ def main() -> None:
 
     if page == "Tableau de bord (Récap & Recos)":
         page_dashboard(start_dt)
-    elif page == "Agriculture (Blocs & Capteurs)":
-        page_agriculture_blocks_and_sensors(start_dt)
+    elif page == "Agriculture – Banane (Blocs & Capteurs)":
+        page_agri_blocks_and_sensors(start_dt, "banane")
+    elif page == "Agriculture – Taro (Blocs & Capteurs)":
+        page_agri_blocks_and_sensors(start_dt, "taro")
     elif page == "Observations terrain (Agriculture)":
         page_observations_agri(start_dt)
+    elif page == "Vivoplants":
+        page_vivoplants(start_dt)
     elif page == "Apiculture (Ruches)":
         page_apiculture(start_dt)
     elif page == "Cuniculuture (Lapins)":
-        page_cuniculture(start_dt)
-    elif page == "Vivoplants":
-        page_vivoplants(start_dt)
+        page_cuniculuture(start_dt)
     elif page == "Objectifs & KPI":
         page_objectifs_kpi(start_dt)
     elif page == "Export (CSV)":
