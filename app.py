@@ -452,17 +452,16 @@ def page_dashboard(start_dt: datetime) -> None:
         metric_card("Taro (blocs)", taro_blocks)
         st.caption("Agriculture")
     with c3:
-        metric_card("PIF (blocs)", pif_blocks)
-        st.caption("Agriculture")
+        metric_card("Vivoplants (lots)", len(lots))
+        st.caption("Vivoplants")
     with c4:
         metric_card("Ruches", len(hives))
         st.caption("Apiculture")
     with c5:
         metric_card("Cuniculuture", len(cycles))
         st.caption("Lapins")
-    with c6:
-        metric_card("Vivoplants (lots)", len(lots))
-        st.caption("Vivoplants")
+
+        
 
 
     st.divider()
