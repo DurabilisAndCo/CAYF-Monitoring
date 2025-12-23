@@ -1,1190 +1,1039 @@
-# app.py — CAYF Monitoring 
-# Streamlit app: Agriculture (Banane/Taro) + Vivoplants + Apiculture + Cuniculture
-# + Dashboard + Objectifs & KPI + Export CSV + Admin reset (safe by crop)
-
-from __future__ import annotations
-
-import os
-import sqlite3
-from datetime import datetime, date, timedelta
-from typing import Optional, Tuple, List
-
-import pandas as pd
 import streamlit as st
-
-
-# =========================
-# Config
-# =========================
-APP_VERSION = "V5 (Single-file Pro)"
-ASSETS_DIR = "assets"
-LOGO_CAYF = os.path.join(ASSETS_DIR, "cayf.jpg")
-LOGO_DURABILIS = os.path.join(ASSETS_DIR, "durabilis.png")
-
-DB_PATH = "monitoring_agri.db"  # SQLite local file in repo root
-
-
-# =========================
-# Helpers: DB
-# =========================
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def exec_sql(query: str, params: Tuple = ()) -> None:
-    conn = get_conn()
-    try:
-        conn.execute(query, params)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def exec_sql_many(query: str, params_list: List[Tuple]) -> None:
-    conn = get_conn()
-    try:
-        conn.executemany(query, params_list)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def read_df(query: str, params: Tuple = ()) -> pd.DataFrame:
-    conn = get_conn()
-    try:
-        return pd.read_sql_query(query, conn, params=params)
-    finally:
-        conn.close()
-
-
-def init_db() -> None:
-    # Tables Agriculture
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS agri_blocks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            crop_type TEXT NOT NULL,          -- 'banane' | 'taro'
-            variety TEXT,
-            area_ha REAL,
-            location TEXT,
-            planting_date TEXT,              -- ISO date
-            notes TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_readings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            block_id INTEGER NOT NULL,
-            crop_type TEXT NOT NULL,          -- redundancy for faster filters
-            reading_dt TEXT NOT NULL,         -- ISO datetime
-            sensor_id TEXT,
-
-            battery_pct REAL,                 -- optionnel
-            soil_moisture_pct REAL,           -- 1
-            soil_temp_c REAL,                 -- 2
-            air_temp_c REAL,                  -- 3
-            air_humidity_pct REAL,            -- 4
-            light_lux REAL,                   -- 5
-            rainfall_mm REAL,                 -- 6
-            ph REAL,                          -- 7 (optionnel mais dans le 7-en-1, utile)
-
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (block_id) REFERENCES agri_blocks(id) ON DELETE CASCADE
-        )
-        """
-    )
-
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS agri_observations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            block_id INTEGER NOT NULL,
-            crop_type TEXT NOT NULL,
-            obs_dt TEXT NOT NULL,            -- ISO datetime
-            stage TEXT,
-            pests TEXT,
-            irrigation TEXT,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (block_id) REFERENCES agri_blocks(id) ON DELETE CASCADE
-        )
-        """
-    )
-
-    # Vivoplants
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS vivoplants_lots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lot_name TEXT NOT NULL,
-            species TEXT,
-            qty_planted INTEGER,
-            start_date TEXT,
-            expected_qty INTEGER,
-            notes TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS vivoplants_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lot_id INTEGER NOT NULL,
-            event_dt TEXT NOT NULL,
-            event_type TEXT NOT NULL,     -- 'entree'|'sortie'|'perte'|'inspection'
-            qty INTEGER,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (lot_id) REFERENCES vivoplants_lots(id) ON DELETE CASCADE
-        )
-        """
-    )
-
-    # Apiculture
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS hives (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hive_code TEXT NOT NULL,
-            status TEXT,
-            install_date TEXT,
-            location TEXT,
-            notes TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS hive_inspections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hive_id INTEGER NOT NULL,
-            insp_dt TEXT NOT NULL,
-            honey_kg REAL,
-            queen_seen INTEGER,           -- 0/1
-            disease_signs TEXT,
-            actions TEXT,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (hive_id) REFERENCES hives(id) ON DELETE CASCADE
-        )
-        """
-    )
-
-    # Cuniculture
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS rabbit_cycles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cycle_name TEXT NOT NULL,
-            start_date TEXT,
-            females INTEGER,
-            males INTEGER,
-            notes TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS rabbit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cycle_id INTEGER NOT NULL,
-            event_dt TEXT NOT NULL,
-            event_type TEXT NOT NULL,      -- 'naissance'|'deces'|'vente'|'soin'|'autre'
-            qty INTEGER,
-            note TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (cycle_id) REFERENCES rabbit_cycles(id) ON DELETE CASCADE
-        )
-        """
-    )
-
-    # Objectifs / KPI
-    exec_sql(
-        """
-        CREATE TABLE IF NOT EXISTS targets (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            banana_ca_target REAL,
-            taro_ca_target REAL,
-            vivoplants_volume_target INTEGER,
-            hives_target INTEGER,
-            rabbits_per_cycle_target INTEGER,
-            loss_tolerance_pct REAL,
-            updated_at TEXT
-        )
-        """
-    )
-
-    # Ensure one row exists
-    df = read_df("SELECT id FROM targets WHERE id = 1")
-    if df.empty:
-        exec_sql(
-            """
-            INSERT INTO targets (id, banana_ca_target, taro_ca_target, vivoplants_volume_target,
-                                 hives_target, rabbits_per_cycle_target, loss_tolerance_pct, updated_at)
-            VALUES (1, 33320000, 5000000, 1000, 2, 540, 10.0, ?)
-            """,
-            (now_iso(),),
-        )
-
-
-def now_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat()
-
-
-def to_dt(d: date, t) -> datetime:
-    return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second)
-
-
-def safe_image(path: str):
-    if os.path.exists(path):
-        st.image(path, use_container_width=True)
-        return True
-    return False
-
-
-# =========================
-# Admin reset (SAFE)
-# =========================
-def delete_agri_by_crop(crop: str) -> None:
-    # Delete only rows linked to blocks of a crop_type
-    df_ids = read_df("SELECT id FROM agri_blocks WHERE crop_type = ?", (crop,))
-    if df_ids.empty:
-        st.info(f"Aucun bloc '{crop}' à supprimer.")
-        return
-
-    ids = df_ids["id"].tolist()
-    placeholders = ",".join(["?"] * len(ids))
-
-    exec_sql(
-        f"DELETE FROM sensor_readings WHERE block_id IN ({placeholders})",
-        tuple(ids),
-    )
-    exec_sql(
-        f"DELETE FROM agri_observations WHERE block_id IN ({placeholders})",
-        tuple(ids),
-    )
-    exec_sql(
-        f"DELETE FROM agri_blocks WHERE id IN ({placeholders})",
-        tuple(ids),
-    )
-
-
-# =========================
-# UI: Branding
-# =========================
-BRAND_TITLE = "CAYF – Data Monitoring Data • développé par DURABILIS & CO"
-BRAND_SUBTITLE_1 = "CENTRE AGROÉCOLOGIQUE INNOVANT DE N'ZAMALIGUÉ"
-BRAND_SUBTITLE_2 = "porté par la Coopérative Agricole Young Foundation (CAYF)"
-BRAND_LOCATION = "Localisation : N'zamaligué, Komo-Mondah, Gabon"
-
-
-def brand_header():
-    c1, c2, c3 = st.columns([1.2, 5.6, 1.2], vertical_alignment="center")
-    with c1:
-        if not safe_image(LOGO_CAYF):
-            st.caption("Logo CAYF manquant (assets/cayf.jpg)")
-    with c2:
-        st.markdown(
-            f"""
-            <div style="padding:14px 18px; border-radius:14px; background: linear-gradient(90deg, #2d3381 0%, #2c6ea1 55%, #44a0c9 100%);">
-              <div style="font-weight:700; font-size:16px; color:white;">{BRAND_TITLE}</div>
-              <div style="margin-top:6px; color:white; opacity:0.95; font-weight:700;">{BRAND_SUBTITLE_1}</div>
-              <div style="color:white; opacity:0.92;">{BRAND_SUBTITLE_2}</div>
-              <div style="margin-top:8px; color:white; opacity:0.92;">{BRAND_LOCATION}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c3:
-        if not safe_image(LOGO_DURABILIS):
-            st.caption("Logo Durabilis manquant (assets/durabilis.png)")
-
-    st.caption(f"🌿 CAYF Monitoring • Développé par DURABILIS & CO • Version {APP_VERSION}")
-    st.divider()
-
-
-def sidebar_nav() -> Tuple[str, int]:
-    st.sidebar.title("🧭 Navigation")
-    page = st.sidebar.radio(
-        "Choisir une page",
-        [
-            "Tableau de bord (Récap & Recos)",
-            "Agriculture – Banane (Blocs & Capteurs)",
-            "Agriculture – Taro (Blocs & Capteurs)",
-            "Observations terrain (Agriculture)",
-            "Vivoplants",
-            "Apiculture (Ruches)",
-            "Cuniculture (Lapins)",
-            "Objectifs & KPI",
-            "Export (CSV)",
-        ],
-    )
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Filtres")
-    days = st.sidebar.slider("Période d'analyse (jours)", 7, 365, 180, step=1)
-    return page, days
-
-
-# =========================
-# Recos (rules) by activity
-# =========================
-def compute_recommendations(start_dt: datetime) -> List[str]:
-    recos: List[str] = []
-
-    # Agriculture (Banane + Taro separately)
-    for crop in ["banane", "taro"]:
-        blocks = read_df("SELECT id FROM agri_blocks WHERE crop_type = ?", (crop,))
-        if blocks.empty:
-            recos.append(f"🌱 {crop.capitalize()} : crée au moins 1 bloc pour activer le suivi capteur + observations.")
-        else:
-            # any sensor readings last X days?
-            df_read = read_df(
-                """
-                SELECT COUNT(*) AS n
-                FROM sensor_readings
-                WHERE crop_type = ? AND reading_dt >= ?
-                """,
-                (crop, start_dt.isoformat()),
-            )
-            n = int(df_read["n"].iloc[0]) if not df_read.empty else 0
-            if n == 0:
-                recos.append(f"📡 {crop.capitalize()} : aucune mesure capteur sur la période. Ajoute au moins 1 relevé 7-en-1.")
-            else:
-                # simple agronomic signals (example)
-                df_last = read_df(
-                    """
-                    SELECT soil_moisture_pct, soil_temp_c, ph, air_temp_c, rainfall_mm
-                    FROM sensor_readings
-                    WHERE crop_type = ?
-                    ORDER BY reading_dt DESC
-                    LIMIT 1
-                    """,
-                    (crop,),
-                )
-                if not df_last.empty:
-                    sm = df_last["soil_moisture_pct"].iloc[0]
-                    stc = df_last["soil_temp_c"].iloc[0]
-                    ph = df_last["ph"].iloc[0]
-                    if pd.notna(sm) and sm < 25:
-                        recos.append(f"💧 {crop.capitalize()} : humidité sol faible (<25%). Vérifie irrigation / paillage.")
-                    if pd.notna(stc) and stc > 32:
-                        recos.append(f"🌡️ {crop.capitalize()} : température sol élevée (>32°C). Ajouter ombrage/paillage si possible.")
-                    if pd.notna(ph) and (ph < 5.5 or ph > 7.5):
-                        recos.append(f"🧪 {crop.capitalize()} : pH hors zone (5.5–7.5). Prévoir correction/diagnostic sol.")
-
-    # Vivoplants
-    lots = read_df("SELECT id FROM vivoplants_lots")
-    if lots.empty:
-        recos.append("🌿 Vivoplants : crée un lot (variété + quantités) pour démarrer le suivi.")
-    else:
-        ev = read_df(
-            "SELECT COUNT(*) AS n FROM vivoplants_events WHERE event_dt >= ?",
-            (start_dt.isoformat(),),
-        )
-        n = int(ev["n"].iloc[0]) if not ev.empty else 0
-        if n == 0:
-            recos.append("🧾 Vivoplants : aucune opération sur la période. Ajoute entrées/sorties/pertes pour piloter la reprise.")
-
-    # Apiculture
-    hives = read_df("SELECT id FROM hives")
-    if hives.empty:
-        recos.append("🍯 Apiculture : enregistre tes ruches (codes) pour activer inspections & production.")
-    else:
-        insp = read_df(
-            "SELECT COUNT(*) AS n FROM hive_inspections WHERE insp_dt >= ?",
-            (start_dt.isoformat(),),
-        )
-        n = int(insp["n"].iloc[0]) if not insp.empty else 0
-        if n == 0:
-            recos.append("🔎 Apiculture : aucune inspection sur la période. Planifie au moins 1 inspection par ruche.")
-
-    # Cuniculture
-    cycles = read_df("SELECT id FROM rabbit_cycles")
-    if cycles.empty:
-        recos.append("🐇 Cuniculture : crée un cycle (date + effectifs) pour suivre naissances/décès/ventes.")
-    else:
-        ev = read_df(
-            "SELECT COUNT(*) AS n FROM rabbit_events WHERE event_dt >= ?",
-            (start_dt.isoformat(),),
-        )
-        n = int(ev["n"].iloc[0]) if not ev.empty else 0
-        if n == 0:
-            recos.append("📋 Cuniculture : aucun événement sur la période. Ajoute naissances/décès/ventes/soins.")
-
-    return recos
-
-
-# =========================
-# Pages
-# =========================
-def page_dashboard(start_dt: datetime):
-    st.header("📊 Tableau de bord – Vue d’ensemble")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    nb_banana = int(read_df("SELECT COUNT(*) AS n FROM agri_blocks WHERE crop_type='banane'")["n"].iloc[0])
-    nb_taro = int(read_df("SELECT COUNT(*) AS n FROM agri_blocks WHERE crop_type='taro'")["n"].iloc[0])
-    nb_lots = int(read_df("SELECT COUNT(*) AS n FROM vivoplants_lots")["n"].iloc[0])
-    nb_hives = int(read_df("SELECT COUNT(*) AS n FROM hives")["n"].iloc[0])
-    nb_cycles = int(read_df("SELECT COUNT(*) AS n FROM rabbit_cycles")["n"].iloc[0])
-
-    with col1:
-        st.metric("Banane", nb_banana)
-        st.caption("Blocs banane")
-    with col2:
-        st.metric("Taro", nb_taro)
-        st.caption("Blocs taro")
-    with col3:
-        st.metric("Vivoplants", nb_lots)
-        st.caption("Lots vivoplants")
-    with col4:
-        st.metric("Ruches", nb_hives)
-        st.caption("Apiculture")
-    with col5:
-        st.metric("Cuniculture", nb_cycles)
-        st.caption("Cycles lapins")
-
-
-    st.divider()
-    st.subheader("🧠 Recommandations automatisées (par activité)")
-    recos = compute_recommendations(start_dt)
-    if not recos:
-        st.success("Tout est à jour ✅")
-    else:
-        for r in recos:
-            st.write("• " + r)
-
-    st.divider()
-    st.subheader("📈 Tendances capteurs – sur la période sélectionnée")
-    df = read_df(
-        """
-        SELECT reading_dt, crop_type, soil_moisture_pct, soil_temp_c, air_temp_c, air_humidity_pct, light_lux, rainfall_mm, ph
-        FROM sensor_readings
-        WHERE reading_dt >= ?
-        ORDER BY reading_dt ASC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if df.empty:
-        st.info("Aucune donnée capteur. Va dans « Agriculture – Banane/Taro » pour ajouter une mesure.")
-        return
-
-    df["reading_dt"] = pd.to_datetime(df["reading_dt"])
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_agri_blocks_and_sensors(start_dt: datetime, crop: str):
-    crop_label = "Banane" if crop == "banane" else "Taro"
-    st.header(f"🌿 Agriculture – {crop_label} (Blocs & Capteurs 7-en-1)")
-
-    # 1) Create block
-    st.subheader("1) Créer un bloc agricole")
-    with st.form(f"create_block_{crop}", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            name = st.text_input("Nom du bloc", value=f"Bloc {crop_label}")
-        with c2:
-            variety = st.text_input("Variété", placeholder="Ex: Big Ebanga / locale…")
-        with c3:
-            area_ha = st.number_input("Superficie (ha)", min_value=0.0, value=1.0, step=0.1)
-        with c4:
-            planting_date = st.date_input("Date de mise en place", value=date.today())
-
-        location = st.text_input("Localisation interne", placeholder="Zone humide / parcelle nord…")
-        notes = st.text_area("Notes", placeholder="Irrigation, sol, contraintes, etc.")
-
-        submitted = st.form_submit_button("✅ Créer le bloc")
-        if submitted:
-            if not name.strip():
-                st.error("Donne un nom au bloc.")
-            else:
-                exec_sql(
-                    """
-                    INSERT INTO agri_blocks (name, crop_type, variety, area_ha, location, planting_date, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        name.strip(),
-                        crop,
-                        variety.strip() if variety else None,
-                        float(area_ha) if area_ha else None,
-                        location.strip() if location else None,
-                        planting_date.isoformat() if planting_date else None,
-                        notes.strip() if notes else None,
-                        now_iso(),
-                    ),
-                )
-                st.success("Bloc créé ✅")
-
-    st.divider()
-
-    # 2) List blocks
-    st.subheader("2) Liste des blocs")
-    blocks = read_df("SELECT * FROM agri_blocks WHERE crop_type = ? ORDER BY id DESC", (crop,))
-    if blocks.empty:
-        st.info("Aucun bloc créé pour le moment. Crée un bloc pour activer la saisie capteur.")
-        return
-
-    st.dataframe(blocks, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # 3) Add sensor reading 7-en-1
-    st.subheader("3) Ajouter une mesure capteur (7-en-1)")
-    block_map = {f"#{r['id']} — {r['name']}": int(r["id"]) for _, r in blocks.iterrows()}
-    chosen_label = st.selectbox("Choisir un bloc", list(block_map.keys()))
-    chosen_block_id = block_map[chosen_label]
-
-    with st.form(f"add_sensor_{crop}", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            reading_date = st.date_input("Date", value=date.today(), key=f"sr_date_{crop}")
-        with c2:
-            reading_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0), key=f"sr_time_{crop}")
-        with c3:
-            sensor_id = st.text_input("ID capteur (optionnel)", placeholder="sensor-01", key=f"sr_id_{crop}")
-        with c4:
-            battery = st.number_input("Batterie % (optionnel)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, key=f"sr_batt_{crop}")
-
-        st.markdown("**📌 Les 7 valeurs (7-en-1)**")
-        a, b, c, d = st.columns(4)
-        with a:
-            soil_moisture = st.number_input("1) Humidité sol (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, key=f"sr_sm_{crop}")
-            soil_temp = st.number_input("2) Température sol (°C)", min_value=-10.0, max_value=80.0, value=0.0, step=0.1, key=f"sr_st_{crop}")
-        with b:
-            air_temp = st.number_input("3) Température air (°C)", min_value=-10.0, max_value=80.0, value=0.0, step=0.1, key=f"sr_at_{crop}")
-            air_hum = st.number_input("4) Humidité air (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, key=f"sr_ah_{crop}")
-        with c:
-            light_lux = st.number_input("5) Luminosité (lux)", min_value=0.0, value=0.0, step=10.0, key=f"sr_lux_{crop}")
-            rainfall = st.number_input("6) Pluie (mm)", min_value=0.0, value=0.0, step=0.1, key=f"sr_rain_{crop}")
-        with d:
-            ph = st.number_input("7) pH (sol/eau)", min_value=0.0, max_value=14.0, value=7.0, step=0.1, key=f"sr_ph_{crop}")
-
-        submit_sr = st.form_submit_button("➕ Enregistrer la mesure")
-        if submit_sr:
-            dt_val = to_dt(reading_date, reading_time).replace(microsecond=0).isoformat()
-            exec_sql(
-                """
-                INSERT INTO sensor_readings (
-                    block_id, crop_type, reading_dt, sensor_id,
-                    battery_pct, soil_moisture_pct, soil_temp_c, air_temp_c, air_humidity_pct, light_lux, rainfall_mm, ph,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    chosen_block_id,
-                    crop,
-                    dt_val,
-                    sensor_id.strip() if sensor_id else None,
-                    float(battery) if battery else None,
-                    float(soil_moisture),
-                    float(soil_temp),
-                    float(air_temp),
-                    float(air_hum),
-                    float(light_lux),
-                    float(rainfall),
-                    float(ph),
-                    now_iso(),
-                ),
-            )
-            st.success("Mesure enregistrée ✅")
-
-    st.divider()
-    st.subheader("4) Dernières mesures capteur (période)")
-    df = read_df(
-        """
-        SELECT reading_dt, sensor_id, battery_pct,
-               soil_moisture_pct, soil_temp_c, air_temp_c, air_humidity_pct, light_lux, rainfall_mm, ph
-        FROM sensor_readings
-        WHERE crop_type = ? AND reading_dt >= ?
-        ORDER BY reading_dt DESC
-        """,
-        (crop, start_dt.isoformat()),
-    )
-    if df.empty:
-        st.info("Aucune mesure sur la période sélectionnée.")
-    else:
-        df["reading_dt"] = pd.to_datetime(df["reading_dt"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_observations_agri(start_dt: datetime):
-    st.header("📝 Observations terrain (Agriculture)")
-
-    blocks = read_df("SELECT id, name, crop_type FROM agri_blocks ORDER BY crop_type, id DESC")
-    if blocks.empty:
-        st.info("Crée d’abord au moins 1 bloc (banane ou taro).")
-        return
-
-    block_map = {f"{r['crop_type'].capitalize()} — #{r['id']} — {r['name']}": int(r["id"]) for _, r in blocks.iterrows()}
-    chosen = st.selectbox("Choisir un bloc", list(block_map.keys()))
-    block_id = block_map[chosen]
-
-    # Fetch crop_type for this block
-    row = read_df("SELECT crop_type FROM agri_blocks WHERE id = ?", (block_id,))
-    crop_type = row["crop_type"].iloc[0] if not row.empty else "banane"
-
-    with st.form("add_obs", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            obs_date = st.date_input("Date", value=date.today())
-        with c2:
-            obs_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0))
-
-        stage = st.text_input("Stade (optionnel)", placeholder="Croissance / floraison / récolte…")
-        pests = st.text_input("Ravageurs / maladies (optionnel)", placeholder="Ex: charançon, nématodes…")
-        irrigation = st.text_input("Irrigation (optionnel)", placeholder="Ex: goutte-à-goutte / arrosage manuel…")
-        note = st.text_area("Note")
-
-        submit = st.form_submit_button("➕ Enregistrer l’observation")
-        if submit:
-            dt_val = to_dt(obs_date, obs_time).replace(microsecond=0).isoformat()
-            exec_sql(
-                """
-                INSERT INTO agri_observations (block_id, crop_type, obs_dt, stage, pests, irrigation, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    block_id,
-                    crop_type,
-                    dt_val,
-                    stage.strip() if stage else None,
-                    pests.strip() if pests else None,
-                    irrigation.strip() if irrigation else None,
-                    note.strip() if note else None,
-                    now_iso(),
-                ),
-            )
-            st.success("Observation enregistrée ✅")
-
-    st.divider()
-    st.subheader("Historique (période)")
-    df = read_df(
-        """
-        SELECT obs_dt, crop_type, stage, pests, irrigation, note
-        FROM agri_observations
-        WHERE obs_dt >= ?
-        ORDER BY obs_dt DESC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if df.empty:
-        st.info("Aucune observation sur la période.")
-    else:
-        df["obs_dt"] = pd.to_datetime(df["obs_dt"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_vivoplants(start_dt: datetime):
-    st.header("🌱 Vivoplants")
-
-    st.subheader("1) Créer un lot")
-    with st.form("create_vivo_lot", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            lot_name = st.text_input("Nom du lot", value="Lot A")
-        with c2:
-            species = st.text_input("Espèce/variété", placeholder="Ex: plantain / bananier…")
-        with c3:
-            qty_planted = st.number_input("Quantité plantée", min_value=0, value=0, step=10)
-        with c4:
-            start_date = st.date_input("Date de démarrage", value=date.today())
-
-        expected_qty = st.number_input("Objectif (quantité attendue)", min_value=0, value=0, step=10)
-        notes = st.text_area("Notes")
-        submit = st.form_submit_button("✅ Créer le lot")
-        if submit:
-            if not lot_name.strip():
-                st.error("Nom du lot requis.")
-            else:
-                exec_sql(
-                    """
-                    INSERT INTO vivoplants_lots (lot_name, species, qty_planted, start_date, expected_qty, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        lot_name.strip(),
-                        species.strip() if species else None,
-                        int(qty_planted),
-                        start_date.isoformat(),
-                        int(expected_qty),
-                        notes.strip() if notes else None,
-                        now_iso(),
-                    ),
-                )
-                st.success("Lot créé ✅")
-
-    st.divider()
-
-    lots = read_df("SELECT * FROM vivoplants_lots ORDER BY id DESC")
-    st.subheader("2) Lots")
-    if lots.empty:
-        st.info("Aucun lot pour le moment.")
-        return
-    st.dataframe(lots, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("3) Ajouter un événement")
-    lot_map = {f"#{r['id']} — {r['lot_name']}": int(r["id"]) for _, r in lots.iterrows()}
-    lot_label = st.selectbox("Choisir un lot", list(lot_map.keys()))
-    lot_id = lot_map[lot_label]
-
-    with st.form("add_vivo_event", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            ev_date = st.date_input("Date", value=date.today(), key="vivo_date")
-        with c2:
-            ev_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0), key="vivo_time")
-        with c3:
-            ev_type = st.selectbox("Type", ["entree", "sortie", "perte", "inspection"], index=3)
-
-        qty = st.number_input("Quantité (si applicable)", min_value=0, value=0, step=10)
-        note = st.text_area("Note")
-        submit = st.form_submit_button("➕ Ajouter")
-        if submit:
-            dt_val = to_dt(ev_date, ev_time).replace(microsecond=0).isoformat()
-            exec_sql(
-                """
-                INSERT INTO vivoplants_events (lot_id, event_dt, event_type, qty, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    lot_id,
-                    dt_val,
-                    ev_type,
-                    int(qty) if qty else None,
-                    note.strip() if note else None,
-                    now_iso(),
-                ),
-            )
-            st.success("Événement ajouté ✅")
-
-    st.divider()
-    st.subheader("Historique (période)")
-    df = read_df(
-        """
-        SELECT event_dt, event_type, qty, note
-        FROM vivoplants_events
-        WHERE event_dt >= ?
-        ORDER BY event_dt DESC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if df.empty:
-        st.info("Aucun événement sur la période.")
-    else:
-        df["event_dt"] = pd.to_datetime(df["event_dt"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_apiculture(start_dt: datetime):
-    st.header("🍯 Apiculture (Ruches)")
-
-    st.subheader("1) Enregistrer une ruche")
-    with st.form("create_hive", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            hive_code = st.text_input("Code ruche", value="RUCHE-01")
-        with c2:
-            status = st.selectbox("Statut", ["active", "faible", "à surveiller", "inactive"])
-        with c3:
-            install_date = st.date_input("Date d’installation", value=date.today())
-        location = st.text_input("Localisation", placeholder="Zone / repère…")
-        notes = st.text_area("Notes")
-        submit = st.form_submit_button("✅ Ajouter la ruche")
-        if submit:
-            if not hive_code.strip():
-                st.error("Code requis.")
-            else:
-                exec_sql(
-                    """
-                    INSERT INTO hives (hive_code, status, install_date, location, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        hive_code.strip(),
-                        status,
-                        install_date.isoformat(),
-                        location.strip() if location else None,
-                        notes.strip() if notes else None,
-                        now_iso(),
-                    ),
-                )
-                st.success("Ruche ajoutée ✅")
-
-    st.divider()
-    hives = read_df("SELECT * FROM hives ORDER BY id DESC")
-    st.subheader("2) Ruches")
-    if hives.empty:
-        st.info("Aucune ruche.")
-        return
-    st.dataframe(hives, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("3) Inspection")
-    hive_map = {f"#{r['id']} — {r['hive_code']}": int(r["id"]) for _, r in hives.iterrows()}
-    hive_label = st.selectbox("Choisir une ruche", list(hive_map.keys()))
-    hive_id = hive_map[hive_label]
-
-    with st.form("add_insp", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            insp_date = st.date_input("Date", value=date.today(), key="insp_date")
-        with c2:
-            insp_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0), key="insp_time")
-        with c3:
-            honey_kg = st.number_input("Miel récolté (kg)", min_value=0.0, value=0.0, step=0.5)
-
-        queen_seen = st.checkbox("Reine observée ?", value=False)
-        disease_signs = st.text_input("Signes maladie (optionnel)")
-        actions = st.text_input("Actions (optionnel)")
-        note = st.text_area("Note")
-
-        submit = st.form_submit_button("➕ Enregistrer")
-        if submit:
-            dt_val = to_dt(insp_date, insp_time).replace(microsecond=0).isoformat()
-            exec_sql(
-                """
-                INSERT INTO hive_inspections (hive_id, insp_dt, honey_kg, queen_seen, disease_signs, actions, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    hive_id,
-                    dt_val,
-                    float(honey_kg),
-                    1 if queen_seen else 0,
-                    disease_signs.strip() if disease_signs else None,
-                    actions.strip() if actions else None,
-                    note.strip() if note else None,
-                    now_iso(),
-                ),
-            )
-            st.success("Inspection enregistrée ✅")
-
-    st.divider()
-    st.subheader("Historique (période)")
-    df = read_df(
-        """
-        SELECT insp_dt, honey_kg, queen_seen, disease_signs, actions, note
-        FROM hive_inspections
-        WHERE insp_dt >= ?
-        ORDER BY insp_dt DESC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if df.empty:
-        st.info("Aucune inspection sur la période.")
-    else:
-        df["insp_dt"] = pd.to_datetime(df["insp_dt"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_cuniculture(start_dt: datetime):
-    st.header("🐇 Cuniculture (Lapins)")
-
-    st.subheader("1) Créer un cycle")
-    with st.form("create_cycle", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            cycle_name = st.text_input("Nom du cycle", value="Cycle 1")
-        with c2:
-            start_date = st.date_input("Date de démarrage", value=date.today())
-        with c3:
-            females = st.number_input("Femelles", min_value=0, value=0, step=1)
-        with c4:
-            males = st.number_input("Mâles", min_value=0, value=0, step=1)
-
-        notes = st.text_area("Notes")
-        submit = st.form_submit_button("✅ Créer")
-        if submit:
-            if not cycle_name.strip():
-                st.error("Nom requis.")
-            else:
-                exec_sql(
-                    """
-                    INSERT INTO rabbit_cycles (cycle_name, start_date, females, males, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        cycle_name.strip(),
-                        start_date.isoformat(),
-                        int(females),
-                        int(males),
-                        notes.strip() if notes else None,
-                        now_iso(),
-                    ),
-                )
-                st.success("Cycle créé ✅")
-
-    st.divider()
-    cycles = read_df("SELECT * FROM rabbit_cycles ORDER BY id DESC")
-    st.subheader("2) Cycles")
-    if cycles.empty:
-        st.info("Aucun cycle.")
-        return
-    st.dataframe(cycles, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("3) Événement")
-    cyc_map = {f"#{r['id']} — {r['cycle_name']}": int(r["id"]) for _, r in cycles.iterrows()}
-    cyc_label = st.selectbox("Choisir un cycle", list(cyc_map.keys()))
-    cycle_id = cyc_map[cyc_label]
-
-    with st.form("add_rabbit_event", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            ev_date = st.date_input("Date", value=date.today(), key="rb_date")
-        with c2:
-            ev_time = st.time_input("Heure", value=datetime.now().time().replace(second=0, microsecond=0), key="rb_time")
-        with c3:
-            ev_type = st.selectbox("Type", ["naissance", "deces", "vente", "soin", "autre"])
-
-        qty = st.number_input("Quantité", min_value=0, value=0, step=1)
-        note = st.text_area("Note")
-        submit = st.form_submit_button("➕ Enregistrer")
-        if submit:
-            dt_val = to_dt(ev_date, ev_time).replace(microsecond=0).isoformat()
-            exec_sql(
-                """
-                INSERT INTO rabbit_events (cycle_id, event_dt, event_type, qty, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    cycle_id,
-                    dt_val,
-                    ev_type,
-                    int(qty) if qty else None,
-                    note.strip() if note else None,
-                    now_iso(),
-                ),
-            )
-            st.success("Événement enregistré ✅")
-
-    st.divider()
-    st.subheader("Historique (période)")
-    df = read_df(
-        """
-        SELECT event_dt, event_type, qty, note
-        FROM rabbit_events
-        WHERE event_dt >= ?
-        ORDER BY event_dt DESC
-        """,
-        (start_dt.isoformat(),),
-    )
-    if df.empty:
-        st.info("Aucun événement sur la période.")
-    else:
-        df["event_dt"] = pd.to_datetime(df["event_dt"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_objectifs_kpi():
-    st.header("🎯 Objectifs chiffrés & suivi")
-
-    t = read_df("SELECT * FROM targets WHERE id = 1")
-    row = t.iloc[0].to_dict() if not t.empty else {}
-
-    st.subheader("Définir des objectifs annuels (exemples)")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        banana = st.number_input("Banane – CA théorique (FCFA/an)", value=float(row.get("banana_ca_target", 33320000) or 0))
-        taro = st.number_input("Taro – CA théorique (FCFA/an)", value=float(row.get("taro_ca_target", 5000000) or 0))
-    with c2:
-        rabbits = st.number_input("Lapins – production (nb/cycle)", value=int(row.get("rabbits_per_cycle_target", 540) or 0))
-        hives = st.number_input("Ruches – nombre cible", value=int(row.get("hives_target", 2) or 0))
-    with c3:
-        vivo = st.number_input("Vivoplants – volume (nb/cycle)", value=int(row.get("vivoplants_volume_target", 1000) or 0))
-        loss = st.number_input("Pertes tolérées (%)", value=float(row.get("loss_tolerance_pct", 10.0) or 0.0))
-
-    if st.button("💾 Enregistrer les objectifs"):
-        exec_sql(
-            """
-            UPDATE targets
-            SET banana_ca_target = ?, taro_ca_target = ?, vivoplants_volume_target = ?,
-                hives_target = ?, rabbits_per_cycle_target = ?, loss_tolerance_pct = ?, updated_at = ?
-            WHERE id = 1
-            """,
-            (banana, taro, int(vivo), int(hives), int(rabbits), float(loss), now_iso()),
-        )
-        st.success("Objectifs enregistrés ✅")
-
-    st.divider()
-    st.subheader("📌 Progression (MVP)")
-
-    # Simple rollups
-    births = read_df("SELECT COALESCE(SUM(qty),0) AS n FROM rabbit_events WHERE event_type = 'naissance'")
-    deaths = read_df("SELECT COALESCE(SUM(qty),0) AS n FROM rabbit_events WHERE event_type = 'deces'")
-    honey = read_df("SELECT COALESCE(SUM(honey_kg),0) AS kg FROM hive_inspections")
-    vivo_out = read_df("SELECT COALESCE(SUM(qty),0) AS n FROM vivoplants_events WHERE event_type = 'sortie'")
-    vivo_loss = read_df("SELECT COALESCE(SUM(qty),0) AS n FROM vivoplants_events WHERE event_type = 'perte'")
-
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("🐇 Naissances (année)", int(births["n"].iloc[0]) if not births.empty else 0)
-        st.caption(f"Décès : {int(deaths['n'].iloc[0]) if not deaths.empty else 0}")
-    with m2:
-        st.metric("🍯 Miel récolté (kg)", float(honey["kg"].iloc[0]) if not honey.empty else 0.0)
-        st.caption("Somme des inspections")
-    with m3:
-        st.metric("🌱 Vivoplants sortis", int(vivo_out["n"].iloc[0]) if not vivo_out.empty else 0)
-        st.caption(f"Pertes : {int(vivo_loss['n'].iloc[0]) if not vivo_loss.empty else 0}")
-
-    st.divider()
-    st.subheader("🧠 Recommandations (pilotage)")
-    start_dt = datetime.now().replace(microsecond=0) - timedelta(days=180)
-    for r in compute_recommendations(start_dt):
-        st.write("• " + r)
-
-
-def page_export():
-    st.header("⬇️ Export des données (CSV)")
-    st.info("Les exports seront disponibles dès la saisie des données terrain.")
-
-    tables = {
-        "Agriculture – Blocs": "agri_blocks",
-        "Agriculture – Capteurs": "sensor_readings",
-        "Agriculture – Observations": "agri_observations",
-        "Vivoplants – Lots": "vivoplants_lots",
-        "Vivoplants – Événements": "vivoplants_events",
-        "Apiculture – Ruches": "hives",
-        "Apiculture – Inspections": "hive_inspections",
-        "Cuniculture – Cycles": "rabbit_cycles",
-        "Cuniculture – Événements": "rabbit_events",
-        "Objectifs – targets": "targets",
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import pydeck as pdk
+from datetime import datetime, date
+import database as db
+
+# ------------------ Page config ------------------
+st.set_page_config(
+    page_title="Ganvié Durable 2030 – Dashboard",
+    page_icon="🌊",
+    layout="wide",
+)
+
+# ------------------ Enhanced Styling ------------------
+CSS = """
+<style>
+/* Import premium font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* CSS Variables for theming */
+:root {
+    --bg-primary: #f1f5f9;
+    --bg-card: rgba(255,255,255,0.75);
+    --text-primary: #1e293b;
+    --text-secondary: #64748b;
+    --accent-blue: #3b82f6;
+    --accent-blue-dark: #2563eb;
+    --accent-green: #10b981;
+    --accent-orange: #f59e0b;
+    --accent-red: #ef4444;
+    --accent-purple: #8b5cf6;
+    --shadow-soft: 0 4px 20px rgba(0,0,0,0.06);
+    --shadow-medium: 0 8px 30px rgba(0,0,0,0.12);
+    --glass-blur: blur(12px);
+    --border-glass: 1px solid rgba(255,255,255,0.3);
+    --gradient-primary: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    --gradient-ocean: linear-gradient(135deg, #2c3e7d 0%, #2c6ea1 50%, #44a0c9 100%);
+}
+
+/* Global typography */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Main container adjustments */
+.block-container {
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+}
+
+/* Enhanced Banner */
+.banner {
+    border-radius: 20px;
+    padding: 24px 28px;
+    background: var(--gradient-ocean);
+    color: white;
+    box-shadow: var(--shadow-medium);
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+}
+
+.banner::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    right: -20%;
+    width: 60%;
+    height: 200%;
+    background: radial-gradient(ellipse, rgba(255,255,255,0.15) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.banner-title {
+    font-size: 1.6rem;
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+
+.banner-sub {
+    opacity: 0.9;
+    margin-top: 8px;
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.badge {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.2);
+    backdrop-filter: blur(4px);
+    margin-left: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+/* Glassmorphism KPI Cards */
+.kpi {
+    border-radius: 18px;
+    padding: 20px;
+    background: var(--bg-card);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: var(--border-glass);
+    box-shadow: var(--shadow-soft);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.kpi:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-medium);
+}
+
+.kpi::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: var(--gradient-primary);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.kpi:hover::before {
+    opacity: 1;
+}
+
+.kpi-icon {
+    font-size: 1.8rem;
+    margin-bottom: 8px;
+}
+
+.kpi-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+}
+
+.kpi-value {
+    font-weight: 800;
+    font-size: 1.8rem;
+    color: var(--text-primary);
+    margin-top: 4px;
+    letter-spacing: -0.02em;
+}
+
+.kpi-hint {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 8px;
+    font-weight: 500;
+}
+
+.kpi-trend {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.kpi-trend-up {
+    background: rgba(16, 185, 129, 0.15);
+    color: #059669;
+}
+
+.kpi-trend-down {
+    background: rgba(239, 68, 68, 0.15);
+    color: #dc2626;
+}
+
+/* Recommendation Cards */
+.rec {
+    border-radius: 16px;
+    padding: 16px 18px;
+    background: var(--bg-card);
+    backdrop-filter: var(--glass-blur);
+    border: var(--border-glass);
+    box-shadow: var(--shadow-soft);
+    margin-bottom: 12px;
+    transition: all 0.2s ease;
+}
+
+.rec:hover {
+    transform: translateX(4px);
+}
+
+.rec-title {
+    font-weight: 650;
+    margin-bottom: 4px;
+    line-height: 1.5;
+}
+
+/* Status Tags */
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-right: 8px;
+}
+
+.tag-ok {
+    background: linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.25));
+    color: #059669;
+    border: 1px solid rgba(16,185,129,0.3);
+}
+
+.tag-warn {
+    background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(245,158,11,0.25));
+    color: #d97706;
+    border: 1px solid rgba(245,158,11,0.3);
+}
+
+.tag-bad {
+    background: linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.25));
+    color: #dc2626;
+    border: 1px solid rgba(239,68,68,0.3);
+}
+
+.small-muted {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    margin-top: 6px;
+}
+
+/* Section Headers */
+.section-header {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 24px 0 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.section-header::after {
+    content: '';
+    flex: 1;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(59,130,246,0.3), transparent);
+    margin-left: 12px;
+}
+
+/* Data Info Badge */
+.data-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: rgba(59,130,246,0.1);
+    border-radius: 8px;
+    font-size: 0.82rem;
+    color: var(--accent-blue-dark);
+    font-weight: 500;
+    margin-bottom: 16px;
+}
+
+/* Tab styling enhancements */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background: rgba(255,255,255,0.5);
+    padding: 6px;
+    border-radius: 14px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-weight: 600;
+}
+
+.stTabs [aria-selected="true"] {
+    background: white;
+    box-shadow: var(--shadow-soft);
+}
+
+/* Sidebar enhancements */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+section[data-testid="stSidebar"] .block-container {
+    padding-top: 2rem;
+}
+
+/* Filter section styling */
+.filter-section {
+    background: white;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow-soft);
+}
+
+.filter-title {
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Reset button styling */
+.reset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: white;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.reset-btn:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(239,68,68,0.3);
+}
+
+/* Chart containers */
+.chart-container {
+    background: white;
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: var(--shadow-soft);
+    margin-bottom: 20px;
+}
+
+/* Loading states */
+.loading-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Map legend */
+.map-legend {
+    display: flex;
+    gap: 16px;
+    padding: 12px 16px;
+    background: white;
+    border-radius: 10px;
+    box-shadow: var(--shadow-soft);
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+}
+
+.legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+}
+
+/* Empty states */
+.empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    border: 2px dashed rgba(0,0,0,0.1);
+}
+
+.empty-state-icon {
+    font-size: 3rem;
+    margin-bottom: 12px;
+}
+
+.empty-state-text {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+/* Hide Streamlit branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+# ------------------ DB init ------------------
+conn = db.get_connection()
+db.init_db(conn)
+
+# ------------------ Caching for performance ------------------
+@st.cache_data(ttl=60)
+def load_households():
+    """Load households data with caching (60s TTL)"""
+    return db.households_df(db.get_connection())
+
+@st.cache_data(ttl=60)
+def load_water_samples():
+    """Load water samples data with caching (60s TTL)"""
+    return db.water_df(db.get_connection())
+
+# ------------------ Chart Theme ------------------
+CHART_TEMPLATE = {
+    'layout': {
+        'font': {'family': 'Inter, sans-serif'},
+        'paper_bgcolor': 'rgba(0,0,0,0)',
+        'plot_bgcolor': 'rgba(0,0,0,0)',
+        'colorway': ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'],
+        'margin': {'l': 40, 'r': 20, 't': 40, 'b': 40},
     }
+}
 
-    label = st.selectbox("Choisir une table", list(tables.keys()))
-    tbl = tables[label]
-
-    df = read_df(f"SELECT * FROM {tbl} ORDER BY 1 DESC")
-    if df.empty:
-        st.warning("Aucune donnée à exporter pour cette table.")
-        return
-
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        f"⬇️ Télécharger {label} (CSV)",
-        data=csv_bytes,
-        file_name=f"cafy_{tbl}.csv",
-        mime="text/csv",
+def apply_chart_style(fig):
+    """Apply consistent styling to Plotly charts"""
+    fig.update_layout(
+        font_family="Inter, sans-serif",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=20, t=40, b=40),
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=12,
+            font_family="Inter"
+        )
     )
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)')
+    return fig
 
+# ------------------ Helpers ------------------
+NEED_COLS = {
+    "Eau": "needs_water",
+    "Assainissement": "needs_sanitation",
+    "Habitat": "needs_housing",
+    "Éducation": "needs_education",
+    "Santé": "needs_health",
+    "Activités économiques": "needs_economic",
+}
 
-# =========================
-# Admin block (sidebar)
-# =========================
-def admin_reset_block():
-    with st.sidebar.expander("🛠️ Admin – Reset données (TEST)", expanded=False):
-        st.warning("Action irréversible. À utiliser uniquement pour des données de test.")
+NEED_ICONS = {
+    "Eau": "💧",
+    "Assainissement": "🚽",
+    "Habitat": "🏠",
+    "Éducation": "📚",
+    "Santé": "🏥",
+    "Activités économiques": "💼",
+}
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🗑️ Effacer Banane"):
-                delete_agri_by_crop("banane")
-                st.success("Banane supprimée ✅")
-                st.rerun()
-
-            if st.button("🗑️ Effacer Taro"):
-                delete_agri_by_crop("taro")
-                st.success("Taro supprimé ✅")
-                st.rerun()
-
-            if st.button("🗑️ Effacer Vivoplants"):
-                for tbl in ["vivoplants_events", "vivoplants_lots"]:
-                    exec_sql(f"DELETE FROM {tbl}")
-                st.success("Vivoplants supprimés ✅")
-                st.rerun()
-
-        with col2:
-            if st.button("🗑️ Effacer Apiculture"):
-                for tbl in ["hive_inspections", "hives"]:
-                    exec_sql(f"DELETE FROM {tbl}")
-                st.success("Apiculture supprimée ✅")
-                st.rerun()
-
-            if st.button("🗑️ Effacer Cuniculture"):
-                for tbl in ["rabbit_events", "rabbit_cycles"]:
-                    exec_sql(f"DELETE FROM {tbl}")
-                st.success("Cuniculture supprimée ✅")
-                st.rerun()
-
-        st.divider()
-        if st.button("⚠️ Tout effacer (reset total)"):
-            for tbl in [
-                "sensor_readings", "agri_observations", "agri_blocks",
-                "vivoplants_events", "vivoplants_lots",
-                "hive_inspections", "hives",
-                "rabbit_events", "rabbit_cycles",
-            ]:
-                exec_sql(f"DELETE FROM {tbl}")
-            st.success("Reset total effectué ✅")
-            st.rerun()
-
-
-# =========================
-# Main
-# =========================
-def main() -> None:
-    st.set_page_config(page_title="CAYF Monitoring", layout="wide")
-
-    # UI skin (dark + slight polish)
+def banner():
     st.markdown(
         """
-        <style>
-          .stApp { background: #0b0f14; }
-          [data-testid="stSidebar"] { background: #0a0d12; }
-          .stDataFrame { border-radius: 12px; }
-        </style>
+        <div class="banner">
+          <div class="banner-title">🌊 Dashboard Ganvié Durable 2030 – Phase 1 : Diagnostic participatif
+            <span class="badge">Powered by Durabilis & Co. Bénin</span>
+          </div>
+          <div class="banner-sub">📊 Données en temps réel • 🏘️ Ménages • 💧 Eau & Environnement • 🗺️ Cartes • 💡 Insights & priorités</div>
+        </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
-    init_db()
-    admin_reset_block()
-    brand_header()
+def kpi(col, label, value, hint="", icon="📊", trend=None):
+    trend_html = ""
+    if trend is not None:
+        if trend > 0:
+            trend_html = f'<span class="kpi-trend kpi-trend-up">↑ +{trend:.1f}%</span>'
+        elif trend < 0:
+            trend_html = f'<span class="kpi-trend kpi-trend-down">↓ {trend:.1f}%</span>'
+    
+    with col:
+        st.markdown(f"""
+        <div class="kpi">
+          <div class="kpi-icon">{icon}</div>
+          <div class="kpi-label">{label}</div>
+          <div class="kpi-value">{value} {trend_html}</div>
+          <div class="kpi-hint">{hint}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    page, days = sidebar_nav()
-    start_dt = datetime.now().replace(microsecond=0) - timedelta(days=int(days))
+def tag(level):
+    if level == "OK":
+        return '<span class="tag tag-ok">✓ OK</span>'
+    if level == "ATTENTION":
+        return '<span class="tag tag-warn">⚠ ATTENTION</span>'
+    return '<span class="tag tag-bad">⚠ CRITIQUE</span>'
 
-    if page == "Tableau de bord (Récap & Recos)":
-        page_dashboard(start_dt)
-    elif page == "Agriculture – Banane (Blocs & Capteurs)":
-        page_agri_blocks_and_sensors(start_dt, "banane")
-    elif page == "Agriculture – Taro (Blocs & Capteurs)":
-        page_agri_blocks_and_sensors(start_dt, "taro")
-    elif page == "Observations terrain (Agriculture)":
-        page_observations_agri(start_dt)
-    elif page == "Vivoplants":
-        page_vivoplants(start_dt)
-    elif page == "Apiculture (Ruches)":
-        page_apiculture(start_dt)
-    elif page == "Cuniculture (Lapins)":
-        page_cuniculture(start_dt)
-    elif page == "Objectifs & KPI":
-        page_objectifs_kpi()
-    elif page == "Export (CSV)":
-        page_export()
+def parse_dt(s):
+    try:
+        return pd.to_datetime(s)
+    except Exception:
+        return pd.NaT
+
+def needs_count(df):
+    cols = list(NEED_COLS.values())
+    for c in cols:
+        if c not in df.columns:
+            df[c] = 0
+    return df[cols].fillna(0).sum(axis=1)
+
+def format_number(n):
+    """Format numbers with thousand separators"""
+    if isinstance(n, float):
+        return f"{n:,.1f}".replace(",", " ")
+    return f"{n:,}".replace(",", " ")
+
+def filtered_data():
+    h = load_households()
+    w = load_water_samples()
+
+    if len(h):
+        h["collected_at"] = pd.to_datetime(h["collected_at"])
+    if len(w):
+        w["collected_at"] = pd.to_datetime(w["collected_at"])
+
+    # Sidebar filters with enhanced styling
+    st.sidebar.markdown('<div class="filter-title">🔍 Filtres de données</div>', unsafe_allow_html=True)
+    
+    zones = sorted(list(set(h["zone"].dropna().unique().tolist() + w["zone"].dropna().unique().tolist())))
+    zone_sel = st.sidebar.multiselect("📍 Quartier / zone", zones, default=zones)
+
+    if len(h):
+        dmin, dmax = h["collected_at"].min().date(), h["collected_at"].max().date()
+    elif len(w):
+        dmin, dmax = w["collected_at"].min().date(), w["collected_at"].max().date()
     else:
-        st.error("Page inconnue.")
+        dmin, dmax = date.today(), date.today()
 
-    st.caption("© CAYF Monitoring • DURABILIS & CO")
+    dr = st.sidebar.date_input("📅 Période d'analyse", value=(dmin, dmax))
+    if isinstance(dr, tuple) and len(dr) == 2:
+        start, end = dr[0], dr[1]
+    else:
+        start, end = dmin, dmax
 
+    vuln_sel = st.sidebar.multiselect("⚡ Niveau de vulnérabilité", ["Faible", "Moyen", "Élevé"], default=["Faible", "Moyen", "Élevé"])
+    need_sel = st.sidebar.multiselect("🎯 Type de besoin", list(NEED_COLS.keys()), default=list(NEED_COLS.keys()))
 
-if __name__ == "__main__":
-    main()
+    # Filter reset and refresh buttons
+    st.sidebar.markdown("---")
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    with col2:
+        if st.button("↩️ Réinitialiser", use_container_width=True):
+            st.rerun()
+
+    # Show active filter count
+    active_filters = 0
+    if len(zone_sel) != len(zones): active_filters += 1
+    if start != dmin or end != dmax: active_filters += 1
+    if len(vuln_sel) != 3: active_filters += 1
+    if len(need_sel) != len(NEED_COLS): active_filters += 1
+    
+    if active_filters > 0:
+        st.sidebar.info(f"🎯 {active_filters} filtre(s) actif(s)")
+
+    # Apply filters
+    if len(h):
+        h = h[h["zone"].isin(zone_sel)]
+        h = h[(h["collected_at"].dt.date >= start) & (h["collected_at"].dt.date <= end)]
+        h = h[h["vulnerability"].isin(vuln_sel)]
+        # keep households that have at least one selected need
+        sel_cols = [NEED_COLS[n] for n in need_sel]
+        if sel_cols:
+            h = h[h[sel_cols].fillna(0).sum(axis=1) >= 1]
+
+    if len(w):
+        w = w[w["zone"].isin(zone_sel)]
+        w = w[(w["collected_at"].dt.date >= start) & (w["collected_at"].dt.date <= end)]
+
+    return h, w, {"zones": zone_sel, "start": start, "end": end, "vuln": vuln_sel, "needs": need_sel}
+
+def compute_kpis(h, target_total):
+    if len(h) == 0:
+        return dict(
+            pct_water=0, pct_san=0, pct_school=0, pct_3needs=0,
+            surveyed=0, target=target_total
+        )
+    pct_water = 100 * h["water_improved"].fillna(0).mean()
+    pct_san = 100 * h["sanitation"].fillna(0).mean()
+    pct_school = 100 * h["children_schooling"].fillna(0).mean()
+    needc = needs_count(h)
+    pct_3needs = 100 * (needc >= 3).mean()
+    return dict(
+        pct_water=pct_water,
+        pct_san=pct_san,
+        pct_school=pct_school,
+        pct_3needs=pct_3needs,
+        surveyed=len(h),
+        target=target_total
+    )
+
+def top_zones(h):
+    if len(h) == 0:
+        return pd.DataFrame(columns=["zone", "vuln_elevee_pct", "sans_san_pct", "besoins_moy"])
+    tmp = h.copy()
+    tmp["need_count"] = needs_count(tmp)
+    g = tmp.groupby("zone").agg(
+        vuln_elevee_pct=("vulnerability", lambda s: 100*(s=="Élevé").mean()),
+        sans_san_pct=("sanitation", lambda s: 100*(s.fillna(0)==0).mean()),
+        besoins_moy=("need_count", "mean"),
+        menages=("household_id","count")
+    ).reset_index()
+    g["score"] = g["vuln_elevee_pct"]*0.45 + g["sans_san_pct"]*0.35 + g["besoins_moy"]*10*0.20
+    return g.sort_values("score", ascending=False)
+
+def water_map(w):
+    if len(w) == 0 or w[["lat","lon"]].dropna().empty:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">🗺️</div>
+            <div class="empty-state-text">Aucun point d'eau géolocalisé sur la période / filtres sélectionnés.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+    df = w.dropna(subset=["lat","lon"]).copy()
+    color = {
+        "Conforme": [16, 185, 129, 200],
+        "A_surveiller": [245, 158, 11, 200],
+        "A_risque": [239, 68, 68, 200],
+    }
+    df["color"] = df["risk_level"].apply(lambda x: color.get(x, [120,120,120,180]))
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position='[lon, lat]',
+        get_fill_color="color",
+        get_radius=65,
+        pickable=True,
+    )
+    view_state = pdk.ViewState(latitude=float(df["lat"].mean()), longitude=float(df["lon"].mean()), zoom=11.5, pitch=0)
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        tooltip={"html": "<b>Zone:</b> {zone}<br/><b>Risque:</b> {risk_level}<br/><b>pH:</b> {ph}<br/><b>Turbidité:</b> {turbidity}<br/><b>E. coli:</b> {e_coli}"},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+    
+    # Map legend
+    st.markdown("""
+    <div class="map-legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div> Conforme</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> À surveiller</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> À risque</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def households_map(h):
+    if len(h) == 0 or h[["lat","lon"]].dropna().empty:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">🏘️</div>
+            <div class="empty-state-text">Aucun ménage géolocalisé sur la période / filtres sélectionnés.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+    df = h.dropna(subset=["lat","lon"]).copy()
+    df["need_count"] = needs_count(df)
+    # scale to colors (blue gradients)
+    def col(n):
+        if n >= 4: return [45,51,129,200]
+        if n == 3: return [59,130,246,200]
+        if n == 2: return [96,165,250,180]
+        return [191, 219, 254, 160]
+    df["color"] = df["need_count"].apply(col)
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position='[lon, lat]',
+        get_fill_color="color",
+        get_radius=30,
+        pickable=True,
+    )
+    view_state = pdk.ViewState(latitude=float(df["lat"].mean()), longitude=float(df["lon"].mean()), zoom=11.5, pitch=0)
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        tooltip={"html": "<b>Zone:</b> {zone}<br/><b>Vulnérabilité:</b> {vulnerability}<br/><b>Besoins:</b> {need_count}"},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+    
+    # Map legend
+    st.markdown("""
+    <div class="map-legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#bfdbfe"></div> 0-1 besoins</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div> 2 besoins</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> 3 besoins</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#2d3381"></div> 4+ besoins</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def insights(h, w):
+    recs = []
+    if len(h):
+        k = compute_kpis(h, db.get_target(conn))
+        if k["pct_water"] < 50:
+            recs.append(("CRITIQUE", "💧 Accès à l'eau améliorée < 50% : prioriser interventions WASH sur zones à score élevé."))
+        elif k["pct_water"] < 70:
+            recs.append(("ATTENTION", "💧 Accès à l'eau à surveiller : cibler les zones où la vulnérabilité est élevée."))
+        if k["pct_san"] < 40:
+            recs.append(("CRITIQUE", "🚽 Assainissement faible : lancer actions rapides (latrines, sensibilisation, gestion déchets)."))
+        if k["pct_3needs"] > 35:
+            recs.append(("ATTENTION", "📊 Beaucoup de ménages expriment ≥3 besoins : planifier un paquet d'investissements multi-secteurs par zone."))
+
+        tz = top_zones(h).head(5)
+        if len(tz):
+            recs.append(("OK", f"🎯 Top zones prioritaires (score composite): {', '.join(tz['zone'].tolist())}."))
+
+    if len(w):
+        risk_share = w["risk_level"].value_counts(normalize=True) * 100
+        if risk_share.get("A_risque", 0) > 25:
+            recs.append(("CRITIQUE", "⚠️ Qualité de l'eau : forte proportion de points à risque. Activer plan de prévention (traitement, points alternatifs, alertes)."))
+        elif risk_share.get("A_surveiller", 0) > 40:
+            recs.append(("ATTENTION", "👀 Qualité de l'eau : plusieurs points à surveiller. Renforcer la fréquence des prélèvements en zones sensibles."))
+
+    if not recs:
+        recs.append(("OK", "✅ Aucun signal critique sur les filtres actuels. Continuer la collecte et consolider la couverture des zones."))
+
+    for lvl, txt in recs[:6]:
+        st.markdown(f'<div class="rec"><div class="rec-title">{tag(lvl)} {txt}</div><div class="small-muted">Recommandation automatique (règles simples) – à valider par les parties prenantes.</div></div>', unsafe_allow_html=True)
+
+def report_pdf_bytes(meta, kpis, tz_df):
+    # PDF minimal (sans images) pour rester léger sur Streamlit Cloud
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buff = BytesIO()
+    c = canvas.Canvas(buff, pagesize=A4)
+    width, height = A4
+
+    y = height - 50
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(40, y, "Ganvié Durable 2030 – Note de synthèse (extrait)")
+    y -= 18
+    c.setFont("Helvetica", 10)
+    c.drawString(40, y, f"Période: {meta['start']} → {meta['end']} | Zones: {', '.join(meta['zones']) if meta['zones'] else '—'}")
+    y -= 26
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(40, y, "Indicateurs clés")
+    y -= 16
+    c.setFont("Helvetica", 10)
+    lines = [
+        f"• Accès à une source d'eau améliorée: {kpis['pct_water']:.1f}%",
+        f"• Ménages avec dispositif d'assainissement: {kpis['pct_san']:.1f}%",
+        f"• Scolarisation (proxy): {kpis['pct_school']:.1f}%",
+        f"• Ménages déclarant ≥3 besoins: {kpis['pct_3needs']:.1f}%",
+        f"• Ménages enquêtés (filtres): {kpis['surveyed']} / cible: {kpis['target']}",
+    ]
+    for ln in lines:
+        c.drawString(50, y, ln); y -= 14
+
+    y -= 8
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(40, y, "Top zones prioritaires (score composite)")
+    y -= 16
+    c.setFont("Helvetica", 9)
+
+    if tz_df is None or tz_df.empty:
+        c.drawString(50, y, "—"); y -= 14
+    else:
+        for _, r in tz_df.head(10).iterrows():
+            c.drawString(50, y, f"- {r['zone']} | vuln. élevée: {r['vuln_elevee_pct']:.0f}% | sans assain.: {r['sans_san_pct']:.0f}% | besoins moy.: {r['besoins_moy']:.2f}")
+            y -= 12
+            if y < 80:
+                c.showPage()
+                y = height - 60
+
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(40, 40, "Document généré automatiquement depuis le dashboard (démo). À compléter avec cartes/graphes sur version finale.")
+    c.save()
+    buff.seek(0)
+    return buff.getvalue()
+
+# ------------------ UI ------------------
+banner()
+
+h, w, meta = filtered_data()
+target_total = db.get_target(conn)
+k = compute_kpis(h, target_total)
+
+# Data info badge
+st.markdown(f'<div class="data-info">📊 <strong>{len(h)}</strong> ménages • <strong>{len(w)}</strong> échantillons d\'eau • Dernière mise à jour: {datetime.now().strftime("%H:%M")}</div>', unsafe_allow_html=True)
+
+tabs = st.tabs(["🏠 Vue d'ensemble", "👥 Diagnostic ménages", "💧 Eau & Environnement", "🗺️ Cartes & Zones", "💡 Insights & Priorités", "📄 Rapport"])
+
+# 1) Accueil
+with tabs[0]:
+    c1, c2, c3, c4, c5 = st.columns(5)
+    kpi(c1, "Accès eau améliorée", f"{k['pct_water']:.1f}%", "Moyenne sur ménages filtrés", "💧")
+    kpi(c2, "Assainissement", f"{k['pct_san']:.1f}%", "Moyenne sur ménages filtrés", "🚽")
+    kpi(c3, "Scolarisation (proxy)", f"{k['pct_school']:.1f}%", "Au moins 1 enfant scolarisé", "📚")
+    kpi(c4, "Ménages ≥ 3 besoins", f"{k['pct_3needs']:.1f}%", "Indicateur de multi‑vulnérabilité", "⚠️")
+    kpi(c5, "Ménages enquêtés", f"{k['surveyed']}/{k['target']}", "Cible paramétrable", "📋")
+
+    st.markdown('<div class="section-header">📈 Évolution de la collecte</div>', unsafe_allow_html=True)
+    if len(h):
+        hh_daily = h.set_index("collected_at").resample("D")["household_id"].count().reset_index()
+        hh_daily["cumul"] = hh_daily["household_id"].cumsum()
+        fig = px.area(hh_daily, x="collected_at", y="cumul", 
+                     labels={"collected_at":"Date", "cumul":"Ménages (cumul)"},
+                     color_discrete_sequence=['#3b82f6'])
+        fig = apply_chart_style(fig)
+        fig.update_traces(fillcolor='rgba(59, 130, 246, 0.2)', line=dict(width=3))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">📈</div>
+            <div class="empty-state-text">Aucune donnée ménage sur la période / filtres.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-header">🎯 Répartition des besoins</div>', unsafe_allow_html=True)
+    if len(h):
+        need_sum = {k: int(h[v].fillna(0).sum()) for k, v in NEED_COLS.items()}
+        df_need = pd.DataFrame({"Besoin": list(need_sum.keys()), "Nombre": list(need_sum.values())}).sort_values("Nombre", ascending=True)
+        fig2 = px.bar(df_need, x="Nombre", y="Besoin", orientation='h',
+                     labels={"Nombre":"Nombre de ménages"},
+                     color_discrete_sequence=['#8b5cf6'])
+        fig2 = apply_chart_style(fig2)
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">🎯</div>
+            <div class="empty-state-text">Aucune donnée ménage pour calculer la répartition des besoins.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 2) Diagnostic ménages
+with tabs[1]:
+    st.markdown('<div class="section-header">📊 Comparaisons par zone</div>', unsafe_allow_html=True)
+    if len(h):
+        tmp = h.copy()
+        tmp["need_count"] = needs_count(tmp)
+        g = tmp.groupby("zone").agg(
+            pct_eau=("water_improved", "mean"),
+            pct_san=("sanitation", "mean"),
+            vuln_elevee=("vulnerability", lambda s: (s=="Élevé").mean()),
+            besoins_moy=("need_count", "mean"),
+            menages=("household_id","count")
+        ).reset_index()
+        g["pct_eau"] *= 100; g["pct_san"] *= 100; g["vuln_elevee"] *= 100
+        
+        fig = px.bar(g.sort_values("pct_eau"), x="zone", y="pct_eau", 
+                    labels={"pct_eau":"% accès eau améliorée", "zone":"Zone"},
+                    color_discrete_sequence=['#3b82f6'])
+        fig = apply_chart_style(fig)
+        st.plotly_chart(fig, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            figb = px.bar(g.sort_values("vuln_elevee"), x="zone", y="vuln_elevee", 
+                         labels={"vuln_elevee":"% vulnérabilité élevée", "zone":"Zone"},
+                         color_discrete_sequence=['#ef4444'])
+            figb = apply_chart_style(figb)
+            st.plotly_chart(figb, use_container_width=True)
+        with c2:
+            figc = px.bar(g.sort_values("besoins_moy"), x="zone", y="besoins_moy", 
+                         labels={"besoins_moy":"Besoins moyens (0–6)", "zone":"Zone"},
+                         color_discrete_sequence=['#f59e0b'])
+            figc = apply_chart_style(figc)
+            st.plotly_chart(figc, use_container_width=True)
+
+        st.markdown('<div class="section-header">🔗 Lien activité ↔ besoins</div>', unsafe_allow_html=True)
+        figd = px.scatter(tmp, x="hh_size", y="need_count", color="main_activity", 
+                         hover_data=["zone","vulnerability"], 
+                         labels={"hh_size":"Taille ménage", "need_count":"Nombre de besoins"},
+                         color_discrete_sequence=['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'])
+        figd = apply_chart_style(figd)
+        st.plotly_chart(figd, use_container_width=True)
+
+        st.markdown('<div class="section-header">🏆 Top zones prioritaires</div>', unsafe_allow_html=True)
+        tz = top_zones(h).head(5)[["zone","menages","vuln_elevee_pct","sans_san_pct","besoins_moy","score"]]
+        st.dataframe(tz, use_container_width=True, hide_index=True)
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">👥</div>
+            <div class="empty-state-text">Aucune donnée ménage sur la période / filtres.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 3) Eau & Environnement
+with tabs[2]:
+    st.markdown('<div class="section-header">🗺️ Carte des points de prélèvement</div>', unsafe_allow_html=True)
+    water_map(w)
+
+    st.markdown('<div class="section-header">📊 Évolution saisonnière</div>', unsafe_allow_html=True)
+    if len(w):
+        c1, c2 = st.columns(2)
+        with c1:
+            fig = px.box(w, x="season", y="turbidity", points="all", 
+                        labels={"season":"Saison", "turbidity":"Turbidité"},
+                        color_discrete_sequence=['#3b82f6'])
+            fig = apply_chart_style(fig)
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            fig2 = px.box(w, x="season", y="e_coli", points="all", 
+                         labels={"season":"Saison", "e_coli":"E. coli (CFU/100ml)"},
+                         color_discrete_sequence=['#ef4444'])
+            fig2 = apply_chart_style(fig2)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.markdown('<div class="section-header">📋 Derniers prélèvements</div>', unsafe_allow_html=True)
+        latest = w.sort_values("collected_at").groupby(["zone"]).tail(1).sort_values("risk_level")
+        st.dataframe(latest[["zone","collected_at","season","ph","turbidity","conductivity","e_coli","risk_level"]], 
+                    use_container_width=True, hide_index=True)
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">💧</div>
+            <div class="empty-state-text">Aucune donnée d'eau sur la période / filtres.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 4) Cartes & Zones
+with tabs[3]:
+    st.markdown('<div class="section-header">🏘️ Carte des ménages</div>', unsafe_allow_html=True)
+    st.caption("Couleur = intensité des besoins (plus foncé = plus de besoins)")
+    households_map(h)
+
+    st.markdown('<div class="section-header">📊 Synthèse par zone</div>', unsafe_allow_html=True)
+    if len(h):
+        tz = top_zones(h)[["zone","menages","vuln_elevee_pct","sans_san_pct","besoins_moy","score"]]
+        st.dataframe(tz, use_container_width=True, hide_index=True)
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">🗺️</div>
+            <div class="empty-state-text">Aucune donnée ménage sur la période / filtres.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 5) Insights
+with tabs[4]:
+    st.markdown('<div class="section-header">💡 Tendances & recommandations</div>', unsafe_allow_html=True)
+    insights(h, w)
+
+    st.markdown('<div class="section-header">🎮 Simulation d\'impact</div>', unsafe_allow_html=True)
+    if len(h):
+        tz = top_zones(h).head(6)
+        zones = tz["zone"].tolist()
+        pick = st.multiselect("🎯 Zones ciblées (simulation)", zones, default=zones[:2])
+        delta = st.slider("📈 Gain d'accès eau améliorée (points de %)", min_value=0, max_value=40, value=15, step=5)
+        cur = compute_kpis(h, target_total)["pct_water"]
+        sim = min(100.0, cur + (delta * (len(pick)/max(1,len(zones)))))
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Accès eau actuel", f"{cur:.1f}%")
+        with col2:
+            st.metric("Accès eau simulé", f"{sim:.1f}%", f"+{sim-cur:.1f}%")
+        with col3:
+            st.metric("Zones ciblées", f"{len(pick)}")
+        
+        st.caption("⚠️ Simulation indicative (démo) : la version finale doit utiliser un modèle d'impact par zone/ménage.")
+    else:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">🎮</div>
+            <div class="empty-state-text">Aucune donnée ménage pour la simulation.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 6) Rapport
+with tabs[5]:
+    st.markdown('<div class="section-header">📄 Générer un rapport PDF</div>', unsafe_allow_html=True)
+    st.caption("Export PDF avec KPIs et top zones prioritaires")
+    tz = top_zones(h)
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if st.button("📄 Générer le PDF", use_container_width=True, type="primary"):
+            with st.spinner("Génération en cours..."):
+                pdf_bytes = report_pdf_bytes(meta, k, tz)
+                st.download_button(
+                    label="⬇️ Télécharger la note PDF",
+                    data=pdf_bytes,
+                    file_name="ganvie_durable_note_synthese.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
+    st.markdown('<div class="section-header">💾 Exports données</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Export ménages (CSV)", data=h.to_csv(index=False).encode("utf-8"), file_name="households_filtered.csv", mime="text/csv", use_container_width=True)
+    with c2:
+        st.download_button("⬇️ Export eau (CSV)", data=w.to_csv(index=False).encode("utf-8"), file_name="water_samples_filtered.csv", mime="text/csv", use_container_width=True)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛠️ Administration")
+if st.sidebar.button("🌱 Générer des données fictives", use_container_width=True):
+    import seed_data
+    seed_data.seed()
+    st.cache_data.clear()
+    st.sidebar.success("✅ Données générées. Rechargez la page.")
+    st.rerun()
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: var(--text-secondary); font-size: 0.85rem; padding: 16px 0;">
+    🌊 Ganvié Durable 2030 • Powered by <strong>Durabilis & Co. Bénin</strong> • Dashboard v2.0
+</div>
+""", unsafe_allow_html=True)
