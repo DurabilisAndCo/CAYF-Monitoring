@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Mac
+.DS_Store
+
+# Data (Optional - remove if you want to commit your local DB)
+*.db
