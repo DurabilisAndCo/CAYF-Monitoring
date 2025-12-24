@@ -21,20 +21,20 @@ CSS = """
 
 /* CSS Variables for theming */
 :root {
-    --bg-primary: #f1f5f9;
-    --bg-card: rgba(255,255,255,0.85);
-    --text-primary: #1e293b;
-    --text-secondary: #64748b;
+    --bg-primary: #ffffff;
+    --bg-card: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
     --accent-green: #059669;
     --accent-green-light: #10b981;
     --accent-blue: #3b82f6;
     --accent-orange: #f59e0b;
     --accent-red: #ef4444;
     --accent-purple: #8b5cf6;
-    --shadow-soft: 0 4px 20px rgba(0,0,0,0.06);
-    --shadow-medium: 0 8px 30px rgba(0,0,0,0.12);
-    --glass-blur: blur(12px);
-    --border-glass: 1px solid rgba(255,255,255,0.3);
+    --shadow-soft: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-medium: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --glass-blur: blur(0px);
+    --border-glass: 1px solid #e2e8f0;
     --gradient-primary: linear-gradient(135deg, #059669 0%, #10b981 100%);
     --gradient-earth: linear-gradient(135deg, #065f46 0%, #047857 50%, #059669 100%);
 }
@@ -42,6 +42,13 @@ CSS = """
 /* Global typography */
 html, body, [class*="css"] {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Fix main background legibility */
+/* Fix main background legibility */
+.stApp {
+    background-color: var(--bg-primary);
+    background-image: none;
 }
 
 /* Main container adjustments */
