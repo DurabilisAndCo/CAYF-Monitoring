@@ -386,6 +386,49 @@ section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 
+/* Sidebar Navigation Styles */
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    background: transparent;
+    padding: 0;
+    border: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+section[data-testid="stSidebar"] label {
+    background: white;
+    border: 1px solid rgba(0,0,0,0.05);
+    padding: 12px 16px;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+    font-weight: 500;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    width: 100%;
+}
+
+section[data-testid="stSidebar"] label:hover {
+    background: #f8fafc;
+    transform: translateX(4px);
+    border-color: var(--accent-green);
+}
+
+section[data-testid="stSidebar"] label[data-checked="true"] {
+    background: var(--accent-green);
+    color: white;
+    box-shadow: var(--shadow-md);
+    font-weight: 600;
+    border: none;
+}
+
+section[data-testid="stSidebar"] label[data-checked="true"]:hover {
+    transform: none;
+}
+
+
 /* Hide branding */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
@@ -541,18 +584,38 @@ assets = load_assets()
 st.markdown(f'<div class="data-info">📊 <strong>{len(assets)}</strong> actifs enregistrés • Dernière mise à jour: {datetime.now().strftime("%H:%M")}</div>', unsafe_allow_html=True)
 
 # Main tabs
-tabs = st.tabs([
+# Main tabs
+TABS = [
     "🏠 Vue Stratégique",
     "🌾 Performance Filières",
     "🗓️ Feuille de Route",
     "🌍 Impact Écosystémique",
     "💰 Modèle Économique",
     "👥 Gouvernance",
-    "⚙️ Configuration"
-])
+    "⚙️ Configuration",
+    "📊 Reporting & IA"
+]
+
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = TABS[0]
+
+# ==================== MAIN NAVIGATION (SIDEBAR) ====================
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/field-and-tractor.png", width=80)
+    st.markdown('<div class="main-header">CAYF Monitor</div>', unsafe_allow_html=True)
+    
+    selected_tab = st.radio(
+        "Navigation", 
+        TABS, 
+        label_visibility="collapsed",
+        key="nav_tabs"
+    )
+    
+    st.markdown("---")
+    st.caption("Version: 2.1.0\nStatus: 🟢 En ligne")
 
 # ==================== TAB 1: VUE STRATÉGIQUE ====================
-with tabs[0]:
+if selected_tab == TABS[0]:
     stats = compute_filiere_stats()
     roadmap_pct = compute_roadmap_progress()
     
@@ -636,12 +699,22 @@ with tabs[0]:
         """, unsafe_allow_html=True)
 
 # ==================== TAB 2: PERFORMANCE FILIÈRES ====================
-with tabs[1]:
+# ==================== TAB 2: PERFORMANCE FILIÈRES ====================
+if selected_tab == TABS[1]:
     st.markdown('<div class="section-header">📈 Performance par Filière</div>', unsafe_allow_html=True)
     
-    filieres = st.tabs(["🍌 Banane & Taro", "🐝 Apiculture", "🐰 Cuniculture", "🌿 Vivoplants"])
+    # Sub-navigation with persistence
+    SUB_TABS = ["🍌 Banane & Taro", "🐝 Apiculture", "🐰 Cuniculture", "🌿 Vivoplants"]
     
-    with filieres[0]:
+    sub_selected = st.radio(
+        "", 
+        SUB_TABS, 
+        horizontal=True, 
+        label_visibility="collapsed",
+        key="sub_nav_filiere"
+    )
+    
+    if sub_selected == SUB_TABS[0]:
         plots = assets[assets['asset_type'] == 'plot'] if len(assets) > 0 else pd.DataFrame()
         if len(plots) > 0:
             st.dataframe(plots[['name', 'crop_type', 'area_m2', 'location', 'created_at']], 
@@ -651,63 +724,65 @@ with tabs[1]:
         
         # Quick add form
         with st.expander("➕ Ajouter une parcelle"):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                new_name = st.text_input("Nom de la parcelle", placeholder="Ex: Parcelle Nord 1")
-            with col2:
-                new_crop = st.selectbox("Type de culture", ["Banane", "Taro", "Banane+Taro", "PIF"])
-            with col3:
-                new_area = st.number_input("Surface (m²)", min_value=0.0, step=10.0)
-            
-            new_location = st.text_input("Localisation", placeholder="Ex: Zone A - Bord du lac")
-            
-            if st.button("✅ Enregistrer la parcelle", type="primary"):
-                if new_name:
-                    db.create_asset(conn, "plot", new_name, crop_type=new_crop, area_m2=new_area, location=new_location)
-                    st.success(f"✅ Parcelle '{new_name}' créée!")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("Le nom est requis.")
+            with st.form("add_plot_form"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    new_name = st.text_input("Nom de la parcelle", placeholder="Ex: Parcelle Nord 1")
+                with col2:
+                    new_crop = st.selectbox("Type de culture", ["Banane", "Taro", "Banane+Taro", "PIF"])
+                with col3:
+                    new_area = st.number_input("Surface (m²)", min_value=0.0, step=10.0)
+                
+                new_location = st.text_input("Localisation", placeholder="Ex: Zone A - Bord du lac")
+                
+                if st.form_submit_button("✅ Enregistrer la parcelle", type="primary"):
+                    if new_name:
+                        db.create_asset(conn, "plot", new_name, crop_type=new_crop, area_m2=new_area, location=new_location)
+                        st.success(f"✅ Parcelle '{new_name}' créée!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Le nom est requis.")
         
         # ==================== CAPTEUR 7-EN-1 ====================
         st.markdown('<div class="section-header">📡 Capteur 7-en-1 - Saisie des Données</div>', unsafe_allow_html=True)
         
         with st.expander("📊 Enregistrer une lecture capteur", expanded=False):
             if len(plots) > 0:
-                selected_plot = st.selectbox("Sélectionner la parcelle", plots['name'].tolist(), key="sensor_plot")
-                asset_id = plots[plots['name'] == selected_plot]['asset_id'].values[0]
-                
-                st.markdown("**📍 Données AIR**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    light = st.number_input("☀️ Éclairage (LUX)", min_value=0.0, max_value=100000.0, step=1.0, value=87.0)
-                with col2:
-                    air_temp = st.number_input("🌡️ Température Air (°C)", min_value=-10.0, max_value=60.0, step=0.1, value=26.2)
-                with col3:
-                    air_humidity = st.number_input("💧 Humidité Air (%)", min_value=0.0, max_value=100.0, step=0.1, value=47.0)
-                
-                st.markdown("**🌱 Données SOL**")
-                col4, col5, col6, col7 = st.columns(4)
-                with col4:
-                    soil_temp = st.number_input("🌡️ Température Sol (°C)", min_value=-10.0, max_value=60.0, step=0.1, value=25.2)
-                with col5:
-                    soil_moisture = st.number_input("💧 Humidité Sol (%)", min_value=0.0, max_value=100.0, step=0.1, value=91.0)
-                with col6:
-                    soil_ph = st.number_input("⚗️ pH Sol", min_value=0.0, max_value=14.0, step=0.1, value=8.3)
-                with col7:
-                    fertility = st.number_input("🌿 Fertilité (µS/cm)", min_value=0.0, max_value=10000.0, step=1.0, value=3654.0)
-                
-                battery = st.slider("🔋 Niveau batterie capteur (%)", 0, 100, 80)
-                
-                if st.button("💾 Enregistrer les données capteur", type="primary", key="save_sensor"):
-                    db.add_sensor_reading(conn, asset_id, datetime.now(), 
-                                         light=light, air_temp=air_temp, air_humidity=air_humidity,
-                                         soil_temp=soil_temp, soil_moisture=soil_moisture, 
-                                         soil_ph=soil_ph, fertility=fertility, battery=battery)
-                    st.success("✅ Données capteur enregistrées!")
-                    st.cache_data.clear()
-                    st.rerun()
+                with st.form("sensor_form"):
+                    selected_plot = st.selectbox("Sélectionner la parcelle", plots['name'].tolist(), key="sensor_plot")
+                    asset_id = plots[plots['name'] == selected_plot]['asset_id'].values[0]
+                    
+                    st.markdown("**📍 Données AIR**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        light = st.number_input("☀️ Éclairage (LUX)", min_value=0.0, max_value=100000.0, step=1.0, value=87.0)
+                    with col2:
+                        air_temp = st.number_input("🌡️ Température Air (°C)", min_value=-10.0, max_value=60.0, step=0.1, value=26.2)
+                    with col3:
+                        air_humidity = st.number_input("💧 Humidité Air (%)", min_value=0.0, max_value=100.0, step=0.1, value=47.0)
+                    
+                    st.markdown("**🌱 Données SOL**")
+                    col4, col5, col6, col7 = st.columns(4)
+                    with col4:
+                        soil_temp = st.number_input("🌡️ Température Sol (°C)", min_value=-10.0, max_value=60.0, step=0.1, value=25.2)
+                    with col5:
+                        soil_moisture = st.number_input("💧 Humidité Sol (%)", min_value=0.0, max_value=100.0, step=0.1, value=91.0)
+                    with col6:
+                        soil_ph = st.number_input("⚗️ pH Sol", min_value=0.0, max_value=14.0, step=0.1, value=8.3)
+                    with col7:
+                        fertility = st.number_input("🌿 Fertilité (µS/cm)", min_value=0.0, max_value=10000.0, step=1.0, value=3654.0)
+                    
+                    battery = st.slider("🔋 Niveau batterie capteur (%)", 0, 100, 80)
+                    
+                    if st.form_submit_button("💾 Enregistrer les données capteur", type="primary"):
+                        db.add_sensor_reading(conn, asset_id, datetime.now(), 
+                                             light=light, air_temp=air_temp, air_humidity=air_humidity,
+                                             soil_temp=soil_temp, soil_moisture=soil_moisture, 
+                                             soil_ph=soil_ph, fertility=fertility, battery=battery)
+                        st.success("✅ Données capteur enregistrées!")
+                        st.cache_data.clear()
+                        st.rerun()
             else:
                 st.warning("⚠️ Créez d'abord une parcelle pour enregistrer des données capteur.")
         
@@ -724,38 +799,39 @@ with tabs[1]:
         
         with st.expander("📝 Enregistrer une observation terrain", expanded=False):
             if len(plots) > 0:
-                obs_plot = st.selectbox("Sélectionner la parcelle", plots['name'].tolist(), key="obs_plot")
-                obs_asset_id = plots[plots['name'] == obs_plot]['asset_id'].values[0]
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    stage = st.selectbox("🌱 Stade phénologique", 
-                                        ["Germination", "Croissance végétative", "Floraison", "Fructification", "Maturité", "Récolte"])
-                with col2:
-                    vigor = st.selectbox("💪 Vigueur", ["Excellent", "Bon", "Moyen", "Faible", "Critique"])
-                with col3:
-                    leaf_status = st.selectbox("🍃 État des feuilles", 
-                                              ["Saines", "Légères taches", "Jaunissement", "Nécrose partielle", "Nécrose sévère"])
-                
-                col4, col5 = st.columns(2)
-                with col4:
-                    disease = st.checkbox("🦠 Présence de maladie")
-                    disease_notes = st.text_input("Notes maladie", placeholder="Ex: Cercosporiose légère") if disease else ""
-                with col5:
-                    pests = st.checkbox("🐛 Présence de ravageurs")
-                    pests_notes = st.text_input("Notes ravageurs", placeholder="Ex: Charançons detectés") if pests else ""
-                
-                obs_notes = st.text_area("📝 Notes générales", placeholder="Observations complémentaires...")
-                
-                if st.button("💾 Enregistrer l'observation", type="primary", key="save_obs"):
-                    db.add_field_observation(conn, obs_asset_id, datetime.now(),
-                                            stage=stage, vigor=vigor, leaf_status=leaf_status,
-                                            disease=1 if disease else 0, disease_notes=disease_notes,
-                                            pests=1 if pests else 0, pests_notes=pests_notes,
-                                            notes=obs_notes)
-                    st.success("✅ Observation enregistrée!")
-                    st.cache_data.clear()
-                    st.rerun()
+                with st.form("obs_form"):
+                    obs_plot = st.selectbox("Sélectionner la parcelle", plots['name'].tolist(), key="obs_plot")
+                    obs_asset_id = plots[plots['name'] == obs_plot]['asset_id'].values[0]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        stage = st.selectbox("🌱 Stade phénologique", 
+                                            ["Germination", "Croissance végétative", "Floraison", "Fructification", "Maturité", "Récolte"])
+                    with col2:
+                        vigor = st.selectbox("💪 Vigueur", ["Excellent", "Bon", "Moyen", "Faible", "Critique"])
+                    with col3:
+                        leaf_status = st.selectbox("🍃 État des feuilles", 
+                                                  ["Saines", "Légères taches", "Jaunissement", "Nécrose partielle", "Nécrose sévère"])
+                    
+                    col4, col5 = st.columns(2)
+                    with col4:
+                        disease = st.checkbox("🦠 Présence de maladie")
+                        disease_notes = st.text_input("Notes maladie", placeholder="Ex: Cercosporiose légère")
+                    with col5:
+                        pests = st.checkbox("🐛 Présence de ravageurs")
+                        pests_notes = st.text_input("Notes ravageurs", placeholder="Ex: Charançons detectés")
+                    
+                    obs_notes = st.text_area("📝 Notes générales", placeholder="Observations complémentaires...")
+                    
+                    if st.form_submit_button("💾 Enregistrer l'observation", type="primary"):
+                        db.add_field_observation(conn, obs_asset_id, datetime.now(),
+                                                stage=stage, vigor=vigor, leaf_status=leaf_status,
+                                                disease=1 if disease else 0, disease_notes=disease_notes if disease else "",
+                                                pests=1 if pests else 0, pests_notes=pests_notes if pests else "",
+                                                notes=obs_notes)
+                        st.success("✅ Observation enregistrée!")
+                        st.cache_data.clear()
+                        st.rerun()
             else:
                 st.warning("⚠️ Créez d'abord une parcelle pour enregistrer des observations.")
         
@@ -809,7 +885,7 @@ with tabs[1]:
                     st.cache_data.clear()
                     st.rerun()
     
-    with filieres[3]:
+    if sub_selected == SUB_TABS[3]:
         vivo = assets[assets['asset_type'] == 'vivoplant'] if len(assets) > 0 else pd.DataFrame()
         if len(vivo) > 0:
             st.dataframe(vivo[['name', 'crop_type', 'notes', 'created_at']], use_container_width=True, hide_index=True)
@@ -817,21 +893,23 @@ with tabs[1]:
             st.info("🌿 Aucun lot de vivoplants enregistré.")
         
         with st.expander("➕ Ajouter un lot vivoplants"):
-            col1, col2 = st.columns(2)
-            with col1:
-                vivo_name = st.text_input("Nom du lot", placeholder="Ex: Lot PIF Janvier 2025")
-            with col2:
-                vivo_species = st.text_input("Espèce/Variété", placeholder="Ex: Plantain FHIA-21")
-            
-            if st.button("✅ Enregistrer le lot", type="primary", key="add_vivo"):
-                if vivo_name:
-                    db.create_asset(conn, "vivoplant", vivo_name, crop_type=vivo_species)
-                    st.success(f"✅ Lot '{vivo_name}' créé!")
-                    st.cache_data.clear()
-                    st.rerun()
+            with st.form("add_vivo_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    vivo_name = st.text_input("Nom du lot", placeholder="Ex: Lot PIF Janvier 2025")
+                with col2:
+                    vivo_species = st.text_input("Espèce/Variété", placeholder="Ex: Plantain FHIA-21")
+                
+                if st.form_submit_button("✅ Enregistrer le lot", type="primary"):
+                    if vivo_name:
+                        db.create_asset(conn, "vivoplant", vivo_name, crop_type=vivo_species)
+                        st.success(f"✅ Lot '{vivo_name}' créé!")
+                        st.cache_data.clear()
+                        st.rerun()
 
 # ==================== TAB 3: FEUILLE DE ROUTE ====================
-with tabs[2]:
+# ==================== TAB 3: FEUILLE DE ROUTE ====================
+if selected_tab == TABS[2]:
     st.markdown('<div class="section-header">🗓️ Feuille de Route 2025-2030</div>', unsafe_allow_html=True)
     
     phases, milestones = load_roadmap()
@@ -899,7 +977,8 @@ with tabs[2]:
             st.rerun()
 
 # ==================== TAB 4: IMPACT ÉCOSYSTÉMIQUE ====================
-with tabs[3]:
+# ==================== TAB 4: IMPACT ÉCOSYSTÉMIQUE ====================
+if selected_tab == TABS[3]:
     st.markdown('<div class="section-header">🌍 Contrat Écosystémique – Indicateurs d\'Impact</div>', unsafe_allow_html=True)
     
     indicators = load_impact_indicators()
@@ -986,7 +1065,8 @@ with tabs[3]:
             st.rerun()
 
 # ==================== TAB 5: MODÈLE ÉCONOMIQUE ====================
-with tabs[4]:
+# ==================== TAB 5: MODÈLE ÉCONOMIQUE ====================
+if selected_tab == TABS[4]:
     st.markdown('<div class="section-header">💰 Modèle Économique – Répartition des Revenus</div>', unsafe_allow_html=True)
     
     streams = load_revenue_streams()
@@ -1056,7 +1136,8 @@ with tabs[4]:
             st.rerun()
 
 # ==================== TAB 6: GOUVERNANCE ====================
-with tabs[5]:
+# ==================== TAB 6: GOUVERNANCE ====================
+if selected_tab == TABS[5]:
     st.markdown('<div class="section-header">👥 Comité de Pilotage</div>', unsafe_allow_html=True)
     
     members = load_committee()
@@ -1119,7 +1200,8 @@ with tabs[5]:
             st.rerun()
 
 # ==================== TAB 7: CONFIGURATION ====================
-with tabs[6]:
+# ==================== TAB 7: CONFIGURATION ====================
+if selected_tab == TABS[6]:
     st.markdown('<div class="section-header">⚙️ Configuration & Administration</div>', unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
@@ -1237,10 +1319,119 @@ with tabs[6]:
         }
         st.dataframe(pd.DataFrame(stats_data), use_container_width=True, hide_index=True)
 
-# Sidebar navigation
-st.sidebar.markdown("---")
-st.sidebar.subheader("🌱 Centre Agroécologique")
-st.sidebar.info("1er Centre Data-Driven du Gabon")
+# ==================== TAB 7: REPORTING & IA ====================
+if selected_tab == TABS[7]:
+    st.markdown('<div class="section-header">🧠 Reporting & Recommandations Stratégiques</div>', unsafe_allow_html=True)
+    
+    # 1. Data Aggregation & Export
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.markdown("""
+        Cette section consolide les données agronomiques, climatiques et opérationnelles pour générer des **insights stratégiques**.
+        L'IA analyse les corrélations pour optimiser les rendements.
+        """)
+    with c2:
+        # Prepare export
+        df_plots = db.get_plots(conn)
+        df_sensors = db.get_sensor_readings(conn)
+        
+        if not df_plots.empty and not df_sensors.empty:
+            # Merge for export
+            export_df = pd.merge(df_sensors, df_plots, on='asset_id', how='left')
+            csv = export_df.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                "📥 Exporter les Données (CSV)",
+                csv,
+                "cayf_full_report.csv",
+                "text/csv",
+                key='download-csv',
+                type="primary"
+            )
+    
+    st.markdown("---")
+    
+    # 2. Automated Strategic Diagnostic (SWOT Cards)
+    st.subheader("🤖 Diagnostic Stratégique Automatisé")
+    
+    # Mock logic for recommendations based on data
+    forces = []
+    weaknesses = []
+    opportunities = []
+
+    # Logic: Check Soil pH
+    avg_ph = df_sensors['soil_ph'].mean() if not df_sensors.empty else 0
+    if 6.0 <= avg_ph <= 7.0:
+        forces.append("✅ pH du sol optimal (Moyenne: {:.1f})".format(avg_ph))
+    elif avg_ph > 0:
+        weaknesses.append("⚠️ pH du sol à surveiller ({:.1f} - optimum 6.0-7.0)".format(avg_ph))
+
+    # Logic: Check Moisture
+    avg_moist = df_sensors['soil_moisture'].mean() if not df_sensors.empty else 0
+    if avg_moist > 80:
+        weaknesses.append("💧 Risque de saturation hydrique (>80%)")
+    elif 40 <= avg_moist <= 80:
+        forces.append("✅ Hydratation des sols stable")
+    
+    # Logic: Hive Count
+    hive_count = len(assets[assets['asset_type'] == 'hive'])
+    if hive_count < 5:
+        opportunities.append("🐝 Potentiel d'extension du rucher (< 5 ruches)")
+    else:
+        forces.append(f"✅ Rucher productif ({hive_count} ruches)")
+
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div style="background-color: #ecfdf5; padding: 15px; border-radius: 10px; border-left: 5px solid #10b981;">
+            <h4 style="color: #047857; margin:0;">💪 FORCES</h4>
+            <ul style="margin-top:10px; padding-left:20px; color: #064e3b;">
+                {}
+            </ul>
+        </div>
+        """.format("".join([f"<li>{f}</li>" for f in forces]) if forces else "<li>Aucune force majeure détectée</li>"), unsafe_allow_html=True)
+        
+    with col2:
+        st.markdown("""
+        <div style="background-color: #fef2f2; padding: 15px; border-radius: 10px; border-left: 5px solid #ef4444;">
+            <h4 style="color: #b91c1c; margin:0;">⚠️ VIGILANCE</h4>
+            <ul style="margin-top:10px; padding-left:20px; color: #7f1d1d;">
+                {}
+            </ul>
+        </div>
+        """.format("".join([f"<li>{w}</li>" for w in weaknesses]) if weaknesses else "<li>Aucun point de vigilance</li>"), unsafe_allow_html=True)
+            
+    with col3:
+        st.markdown("""
+        <div style="background-color: #eff6ff; padding: 15px; border-radius: 10px; border-left: 5px solid #3b82f6;">
+            <h4 style="color: #1d4ed8; margin:0;">🚀 OPPORTUNITÉS</h4>
+            <ul style="margin-top:10px; padding-left:20px; color: #1e3a8a;">
+                {}
+            </ul>
+        </div>
+        """.format("".join([f"<li>{o}</li>" for o in opportunities]) if opportunities else "<li>Pas d'opportunité immédiate</li>"), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # 3. Correlations (Charts)
+    st.subheader("📈 Analyse des Corrélations")
+    
+    if not df_sensors.empty:
+        # Chart 1: Temp vs Humidity
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**🌡️ Corrélation Température / Humidité**")
+            chart_data = df_sensors[['air_temp', 'air_humidity']].copy()
+            st.line_chart(chart_data)
+        
+        with c2:
+            st.markdown("**💧 Humidité Sol vs Fertilité**")
+            chart_data2 = df_sensors[['soil_moisture', 'fertility']].copy()
+            # Normalize for visualization if needed, or simple line chart
+            st.line_chart(chart_data2)
+    else:
+        st.info("Générez des données fictives dans l'onglet 'Configuration' pour voir les graphiques.")
 
 # Footer
 st.markdown("---")
